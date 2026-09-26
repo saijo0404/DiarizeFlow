@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>DiarizeFlow - 即時語者分離翻譯字幕 HUD</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <!-- Top Control Bar -->
+  <div id="top-bar">
+    <span class="status-dot" id="status-dot"></span>
+    <span id="status-text">連線中...</span>
+    <button class="btn btn-primary" id="btn-web-mic">🎤 瀏覽器收音</button>
+    <button class="btn" id="btn-web-system">🖥️ 系統聲音 (標籤頁/遊戲)</button>
+    <button class="btn" id="btn-settings">⚙ 設定</button>
+  </div>
+
+  <!-- Subtitle Container -->
+  <div id="subtitle-container">
+    <!-- Active Subtitles will be injected here dynamically -->
+  </div>
+
+  <!-- Settings Modal -->
+  <div id="settings-modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h3>DiarizeFlow - 即時翻譯與顯示設定</h3>
+        <button class="close-btn" id="btn-modal-close">&times;</button>
+      </div>
+
+      <div class="form-group">
+        <label for="setting-target-lang">目標翻譯語言</label>
+        <select id="setting-target-lang" class="form-control">
+          <option value="繁體中文">繁體中文</option>
+          <option value="English">English</option>
+          <option value="日本語">日本語</option>
+          <option value="한국어">한국어</option>
+          <option value="簡體中文">簡體中文</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="setting-provider">LLM 翻譯引擎</label>
+        <select id="setting-provider" class="form-control">
+          <option value="vllm">vLLM (本地 / 遠端)</option>
+          <option value="llama.cpp">llama.cpp</option>
+          <option value="openai">OpenAI (官方 API)</option>
+          <option value="claude">Claude (Anthropic)</option>
+          <option value="ollama">Ollama</option>
+          <option value="bypass">不翻譯 (直接輸出原語音辨識)</option>
+        </select>
+      </div>
+
+      <div class="form-group">
+        <label for="setting-base-url">API Base URL</label>
+        <input type="text" id="setting-base-url" class="form-control" value="http://127.0.0.1:8000/v1">
+      </div>
+
+      <div class="form-group">
+        <label for="setting-model">模型名稱 (Model Name)</label>
+        <input type="text" id="setting-model" class="form-control" value="auto" placeholder="auto (自動偵測可用模型)">
+      </div>
+
+      <div class="form-group">
+        <label for="setting-fade-delay">字幕自動淡出消失時間 (避免長時間停留畫面)</label>
+        <input type="number" id="setting-fade-delay" class="form-control" value="5" min="2" max="30" step="1">
+      </div>
+
+      <div class="form-group">
+        <label for="setting-test-audio">測試音訊上傳 (無需麥克風即可評測完整管線)</label>
+        <input type="file" id="setting-test-audio" accept="audio/*" class="form-control">
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; gap: 8px; margin-top: 8px;">
+        <button class="btn" id="btn-cancel-settings">取消</button>
+        <button class="btn btn-primary" id="btn-save-settings">儲存設定</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
