@@ -180,6 +180,7 @@ class AppConfig:
             llm=LLMConfig(**data.get("llm", {})),
             ui=UIConfig(**ui_dict),
             server=ServerConfig(**data.get("server", {})),
+            hardware_calibrated=data.get("hardware_calibrated", False),
         )
 
     def save(self, filepath: Optional[str] = None) -> None:
