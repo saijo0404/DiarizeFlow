@@ -40,7 +40,7 @@ def start_server_in_thread(app, host: str, port: int):
 
 def run_cli():
     parser = argparse.ArgumentParser(description="DiarizeFlow 一鍵啟動後端與透明飄浮前端")
-    parser.add_argument("--mode", type=str, default="desktop", choices=["desktop", "web"], help="前端模式 (desktop 或 web)")
+    parser.add_argument("--mode", type=str, default="desktop", choices=["desktop"], help="前端模式 (預設: desktop 原生桌面 HUD)")
     parser.add_argument("--port", type=int, default=8765, help="連接埠 (預設: 8765)")
     parser.add_argument("--target-lang", type=str, default="繁體中文", help="目標翻譯語言 (預設: 繁體中文)")
     parser.add_argument("--llm-provider", type=str, default="vllm", help="LLM 供應商 (vllm, llama.cpp, openai, claude, bypass)")
@@ -76,37 +76,17 @@ def run_cli():
     server, thread = start_server_in_thread(app, "127.0.0.1", actual_port)
     time.sleep(0.5)
 
-    if args.mode == "web":
-        import webbrowser
-        url = f"http://localhost:{actual_port}/overlay"
-        print(f"[*] 開啟 Web HUD: {url}")
-        webbrowser.open(url)
-        try:
-            while thread and thread.is_alive():
-                time.sleep(0.5)
-        except KeyboardInterrupt:
-            if server:
-                server.should_exit = True
-    else:
-        try:
-            from diarizeflow.app.frontend.desktop_overlay import run_overlay_app
-            print("[*] 正在啟動 PySide6 原生透明飄浮字幕視窗 (Windows & Linux 相容)...")
-            code = run_overlay_app(cfg, pipeline=pipeline)
-            import os
-            os._exit(code if isinstance(code, int) else 0)
-        except Exception as e:
-            print(f"[!] 無法載入桌面圖形視窗 ({e})，轉為開啟瀏覽器 Web HUD...")
-            import webbrowser
-            url = f"http://localhost:{actual_port}/overlay"
-            webbrowser.open(url)
-            try:
-                while thread and thread.is_alive():
-                    time.sleep(0.5)
-            except KeyboardInterrupt:
-                if server:
-                    server.should_exit = True
-            import os
-            os._exit(0)
+    try:
+        from diarizeflow.app.frontend.desktop_overlay import run_overlay_app
+        print("[*] 正在啟動 PySide6 原生透明飄浮字幕視窗 (Windows & Linux 相容)...")
+        code = run_overlay_app(cfg, pipeline=pipeline)
+        import os
+        os._exit(code if isinstance(code, int) else 0)
+    except Exception as e:
+        print(f"[!] 無法載入桌面圖形視窗: {e}")
+        print("[!] 請確認系統具備桌面圖形介面 (如 X11/Wayland/Windows 桌面)。")
+        import os
+        os._exit(1)
 
 
 if __name__ == "__main__":

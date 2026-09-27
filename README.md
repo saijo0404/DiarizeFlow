@@ -190,7 +190,6 @@ DiarizeFlow 內建支援 **Windows 與 Linux** 的前後端分離即時語音分
                                │                 前端 (Frontend)               │
                                │  - 麥克風 / 系統音訊 (WASAPI/Pulse Loopback) │
                                │  - PySide6 原生透明飄浮 HUD (防畫面干擾)     │
-                               │  - Web / OBS 透明疊加層 (/overlay)           │
                                └──────────────────────┬───────────────────────┘
                                                       │ WebSocket (/ws/audio, /ws/subtitles)
                                ┌──────────────────────▼───────────────────────┐
@@ -207,7 +206,6 @@ DiarizeFlow 內建支援 **Windows 與 Linux** 的前後端分離即時語音分
 1. **多來源音訊即時捕捉 (Cross-Platform Audio Capture)**：
    - **Windows**：支援 WASAPI Loopback 捕捉遊戲、瀏覽器、Discord 聲音，並可與麥克風同時混合收音。
    - **Linux**：原生相容 PulseAudio 與 PipeWire Monitor 來源，輕鬆擷取系統內播音訊。
-   - **Web Audio API**：瀏覽器介面亦可直接點擊「系統聲音（標籤頁/遊戲）」或「麥克風」收音。
 2. **極致美觀的透明飄浮 UI (Floating HUD)**：
    - 無邊框、背景毛玻璃半透明、釘選於最上層（Always on Top）、支援自由拖曳位置。
    - **滑鼠穿透模式（Click-through）**：開啟後滑鼠點擊直接穿透到底層遊戲或視窗，不影響操作。
@@ -238,10 +236,7 @@ DiarizeFlow 內建支援 **Windows 與 Linux** 的前後端分離即時語音分
 
 ```bash
 # 啟動 PySide6 原生透明飄浮 HUD（預設繁體中文，直連後端）
-uv run python scripts/run_app.py --mode desktop
-
-# 若在遠端伺服器或 OBS 串流環境，可切換為 Web HUD
-uv run python scripts/run_app.py --mode web
+uv run python scripts/run_app.py
 ```
 
 #### 方式三：打包為免 Python 的獨立執行檔 (Executable)
