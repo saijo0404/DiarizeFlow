@@ -71,7 +71,7 @@ class StreamingDiarizationSegmenter:
     def __init__(
         self,
         sample_rate: int = 16000,
-        sad_threshold: float = 0.40,
+        sad_threshold: float = 0.50,
         silence_timeout_ms: int = 350,
         min_speech_ms: int = 200,
         max_speech_s: float = 6.0,
@@ -111,7 +111,7 @@ class StreamingDiarizationSegmenter:
         self._audio_window: List[np.ndarray] = []
         self._window_total_samples = 0
 
-        # Acoustic Energy Fallback state (used when ONNX model is unavailable)
+        # Acoustic Energy Fallback state (used when ONNX model is unavailable or for energy gating)
         self.noise_floor: float = 0.002
         self.noise_alpha: float = 0.05
         self.energy_threshold: float = 0.008
@@ -144,7 +144,7 @@ class StreamingDiarizationSegmenter:
         )
 
         if has_onnx:
-            completed_utterances = self._process_neural_sad(chunk)
+            completed_utterances = self._process_neural_sad(chunk, rms)
         else:
             completed_utterances = self._process_fallback_energy(chunk, rms)
 
@@ -161,8 +161,10 @@ class StreamingDiarizationSegmenter:
 
         return completed_utterances
 
-    def _process_neural_sad(self, chunk: np.ndarray) -> List[Tuple[np.ndarray, str, float, float]]:
-        """Process chunk using Sortformer Frame-level SAD probabilities."""
+    def _process_neural_sad(
+        self, chunk: np.ndarray, rms: float
+    ) -> List[Tuple[np.ndarray, str, float, float]]:
+        """Process chunk using Sortformer Frame-level SAD probabilities and energy gating."""
         self._audio_window.append(chunk)
         self._window_total_samples += len(chunk)
 
@@ -176,17 +178,45 @@ class StreamingDiarizationSegmenter:
         # Execute streaming forward step
         probs = self.diarizer.forward_streaming_step(window_audio, self.sample_rate)
 
+        # Dynamically track background noise floor to prevent false triggers on quiet hiss / ambient room noise
+        any_in_speech = any(buf.in_speech for buf in self.channel_buffers.values())
+        if not any_in_speech:
+            if rms < self.noise_floor:
+                self.noise_floor = 0.85 * self.noise_floor + 0.15 * rms
+            else:
+                self.noise_floor = (1.0 - self.noise_alpha) * self.noise_floor + self.noise_alpha * min(
+                    rms, self.noise_floor * 1.5
+                )
+        else:
+            if rms < self.noise_floor:
+                self.noise_floor = 0.95 * self.noise_floor + 0.05 * rms
+
+        min_speech_energy = max(0.004, self.noise_floor * 1.5)
+        has_audible_energy = rms >= min_speech_energy
+
         active_channels = set()
         if probs is not None and len(probs) > 0:
             # 1 Sortformer output frame = 40ms = 640 audio samples
-            # Determine how many output frames correspond to the newly arrived chunk
             chunk_frames = max(1, int(np.ceil(len(chunk) / 640)))
             recent_probs = probs[-chunk_frames:, :]  # shape (F, 8)
 
             for ch in range(min(self.num_channels, recent_probs.shape[1])):
-                max_prob = float(np.max(recent_probs[:, ch]))
-                if max_prob >= self.sad_threshold:
-                    active_channels.add(ch)
+                ch_p = recent_probs[:, ch]
+                is_currently_in_speech = self.channel_buffers[ch].in_speech
+
+                if is_currently_in_speech:
+                    # Hysteresis for ongoing speech so natural pauses/dips in words aren't cut prematurely
+                    thresh = max(0.30, self.sad_threshold - 0.10)
+                    if float(np.max(ch_p)) >= thresh:
+                        active_channels.add(ch)
+                else:
+                    # Onset of new speech requires audible acoustic energy AND sustained probability
+                    if has_audible_energy and (
+                        float(np.mean(ch_p)) >= self.sad_threshold
+                        or np.sum(ch_p >= self.sad_threshold) >= 2
+                        or float(np.max(ch_p)) >= min(0.90, self.sad_threshold + 0.20)
+                    ):
+                        active_channels.add(ch)
 
         completed: List[Tuple[np.ndarray, str, float, float]] = []
 
@@ -197,6 +227,17 @@ class StreamingDiarizationSegmenter:
                     buf.start_speech(list(self._pre_buffer), initial_chunk=chunk)
                 else:
                     buf.add_speech_chunk(chunk)
+
+                # Enforce max duration cutoff even during continuous speech
+                if buf.speech_samples >= self.max_speech_samples:
+                    if buf.speech_samples >= self.min_speech_samples:
+                        seg_audio = buf.get_utterance_audio()
+                        spk_label, conf = self._identify_speaker_segment(seg_audio, ch)
+                        dur = round(len(seg_audio) / self.sample_rate, 2)
+                        completed.append((seg_audio, spk_label, conf, dur))
+                    buf.reset()
+                    # Seamlessly continue speech accumulation for next chunk
+                    buf.start_speech([], initial_chunk=None)
             else:
                 if buf.in_speech:
                     buf.add_silence_chunk(chunk)
@@ -245,6 +286,16 @@ class StreamingDiarizationSegmenter:
                 buf.start_speech(list(self._pre_buffer), initial_chunk=chunk)
             else:
                 buf.add_speech_chunk(chunk)
+
+            # Enforce max duration cutoff in fallback mode
+            if buf.speech_samples >= self.max_speech_samples:
+                if buf.speech_samples >= self.min_speech_samples:
+                    seg_audio = buf.get_utterance_audio()
+                    spk_label, conf = self._identify_speaker_segment(seg_audio, 0)
+                    dur = round(len(seg_audio) / self.sample_rate, 2)
+                    completed.append((seg_audio, spk_label, conf, dur))
+                buf.reset()
+                buf.start_speech([], initial_chunk=None)
         else:
             if buf.in_speech:
                 buf.add_silence_chunk(chunk)

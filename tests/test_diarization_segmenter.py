@@ -297,6 +297,76 @@ class TestDiarizationDrivenSegmenter(unittest.TestCase):
         self.assertEqual(len(emitted), 1)
         self.assertEqual(emitted[0][1], "講者 1")
 
+    def test_continuous_speech_cut_by_max_speech_s(self):
+        """Verify continuous speech without pauses is forcefully cut and emitted at max_speech_s."""
+        emitted = []
+
+        def on_utterance(audio_seg, spk_label, conf, duration):
+            emitted.append((audio_seg, spk_label, conf, duration))
+
+        mock_diarizer = MagicMock()
+        mock_diarizer.session = MagicMock()
+        mock_diarizer.identify_speaker.return_value = ("講者 1", 0.95, [0.95] + [0.0] * 7)
+
+        # Continually active Channel 0 (no silence at all!)
+        active_probs = np.zeros((6, 8), dtype=np.float32)
+        active_probs[:, 0] = 0.90
+        mock_diarizer.forward_streaming_step.return_value = active_probs
+
+        segmenter = StreamingDiarizationSegmenter(
+            sample_rate=16000,
+            sad_threshold=0.50,
+            silence_timeout_ms=300,
+            min_speech_ms=200,
+            max_speech_s=1.0,  # 1.0 second max speech duration
+            diarizer=mock_diarizer,
+            on_utterance=on_utterance,
+        )
+
+        chunk = np.ones(4000, dtype=np.float32) * 0.15  # 250ms chunks
+
+        # Feed 10 consecutive chunks of speech (2.5s total with NO silence)
+        for _ in range(10):
+            segmenter.process_chunk(chunk, rms=0.15)
+
+        # Must have been cut into multiple segments at 1.0s boundaries!
+        self.assertGreaterEqual(len(emitted), 2, "Continuous speech should have been cut by max_speech_s!")
+        for _, _, _, dur in emitted:
+            self.assertLessEqual(dur, 1.5, "No emitted utterance should exceed max_speech_s + padding!")
+
+    def test_ambient_noise_rejection(self):
+        """Verify quiet ambient noise below acoustic energy floor does not trigger speech onset."""
+        emitted = []
+
+        def on_utterance(audio_seg, spk_label, conf, duration):
+            emitted.append((audio_seg, spk_label, conf, duration))
+
+        mock_diarizer = MagicMock()
+        mock_diarizer.session = MagicMock()
+
+        # Neural network has occasional false spike of 0.55 on ambient noise
+        spike_probs = np.zeros((6, 8), dtype=np.float32)
+        spike_probs[0, 0] = 0.55
+
+        mock_diarizer.forward_streaming_step.return_value = spike_probs
+
+        segmenter = StreamingDiarizationSegmenter(
+            sample_rate=16000,
+            sad_threshold=0.50,
+            silence_timeout_ms=300,
+            diarizer=mock_diarizer,
+            on_utterance=on_utterance,
+        )
+
+        # Feed 4 chunks of near-silent background noise (RMS 0.001)
+        quiet_chunk = np.ones(4000, dtype=np.float32) * 0.001
+        for _ in range(4):
+            segmenter.process_chunk(quiet_chunk, rms=0.001)
+
+        # Nothing should be emitted or triggered
+        self.assertEqual(len(emitted), 0)
+        self.assertFalse(segmenter.channel_buffers[0].in_speech)
+
 
 if __name__ == "__main__":
     unittest.main()

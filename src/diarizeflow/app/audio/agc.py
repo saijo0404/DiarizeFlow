@@ -64,12 +64,12 @@ class StreamingInputAGC:
             self.noise_floor = 0.98 * self.noise_floor + 0.02 * min(raw_rms, self.noise_floor * 1.5)
 
         # Ambient silence gate: avoid inflating digital zero or pure background hiss
-        is_silence = raw_rms < max(0.0003, self.noise_floor * 1.4)
+        is_silence = raw_rms < max(0.0018, self.noise_floor * 1.6)
 
         if is_silence:
-            # During silence, gently decay high gain back towards neutral 1.0~2.5 to avoid noise breathing
-            desired_gain = min(self.current_gain, 2.5)
-            alpha = 0.02
+            # During silence, gently decay high gain back towards neutral 1.0 to avoid noise breathing
+            desired_gain = min(self.current_gain, 1.2)
+            alpha = 0.05
         else:
             # Sound activity detected: calculate desired gain to achieve target RMS
             desired_gain = float(np.clip(self.target_rms / max(raw_rms, 1e-5), self.min_gain, self.max_gain))
