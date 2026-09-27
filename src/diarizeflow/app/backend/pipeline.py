@@ -15,7 +15,7 @@ import numpy as np
 
 from diarizeflow.app.config import AppConfig
 from diarizeflow.app.audio.vad import EnergyVADSegmenter
-from diarizeflow.app.audio.agc import apply_speech_agc, StreamingInputAGC
+from diarizeflow.app.audio.agc import StreamingInputAGC
 from diarizeflow.app.backend.diarizer import NemotronDiarizer
 from diarizeflow.app.backend.asr import SenseVoiceASR, create_asr_engine
 from diarizeflow.app.backend.translator import LLMTranslator
@@ -188,21 +188,8 @@ class DiarizeFlowPipeline:
 
             t_process_start = time.perf_counter()
             try:
-                # 0. Automatic Gain Control (AGC) & Volume Normalization
+                # Audio segment has already been dynamically normalized by StreamingInputAGC in process_audio_chunk
                 proc_audio = audio_segment
-                if getattr(self.config.audio, "agc_enabled", True):
-                    target_rms = getattr(self.config.audio, "agc_target_rms", 0.08)
-                    max_gain = getattr(self.config.audio, "agc_max_gain", 4.0)
-                    min_gain = getattr(self.config.audio, "agc_min_gain", 0.25)
-                    proc_audio, applied_gain = apply_speech_agc(
-                        audio_segment,
-                        target_rms=target_rms,
-                        max_gain=max_gain,
-                        min_gain=min_gain,
-                    )
-                    if applied_gain > 1.25 or applied_gain < 0.8:
-                        action = "放大" if applied_gain > 1.0 else "縮小"
-                        print(f"  [AGC 自動調音] 自動{action}輸入音訊 {applied_gain:.2f}x (目標能量: {target_rms})")
 
                 # 1. Speaker Diarization & Turn Segmentation (Detects single or multiple speakers)
                 t_diar_start = time.perf_counter()

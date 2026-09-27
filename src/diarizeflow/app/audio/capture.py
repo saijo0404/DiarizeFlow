@@ -139,16 +139,16 @@ class AudioCaptureStream:
             )
 
     def _resample_to_16k(self, audio: np.ndarray, orig_sr: int) -> np.ndarray:
-        """Convert multi-channel audio to mono and resample to 16kHz cleanly and quickly."""
+        """Convert multi-channel audio to mono and resample to 16kHz with polyphase anti-aliasing."""
         if audio.ndim > 1:
             audio = np.mean(audio, axis=-1)  # downmix to mono
 
         if orig_sr != self.target_sr and len(audio) > 0:
-            num_target_samples = int(len(audio) * (self.target_sr / orig_sr))
-            if num_target_samples > 0:
-                x_orig = np.linspace(0.0, 1.0, len(audio), endpoint=False)
-                x_target = np.linspace(0.0, 1.0, num_target_samples, endpoint=False)
-                audio = np.interp(x_target, x_orig, audio)
+            import math
+            gcd = math.gcd(orig_sr, self.target_sr)
+            up = self.target_sr // gcd
+            down = orig_sr // gcd
+            audio = scipy.signal.resample_poly(audio, up, down)
 
         return audio.astype(np.float32)
 
