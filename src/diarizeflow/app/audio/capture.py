@@ -23,12 +23,18 @@ class AudioCaptureStream:
         chunk_ms: int = 250,
         gain: float = 1.0,
         on_audio_chunk: Optional[Callable[[np.ndarray, float], None]] = None,
+        stall_timeout: float = 1.0,
+        max_drift_chunks: int = 4,
+        max_buffer_chunks: int = 8,
     ):
         self.target_sr = target_sample_rate
         self.chunk_ms = chunk_ms
         self.chunk_samples = int(self.target_sr * (self.chunk_ms / 1000.0))
         self.gain = gain
         self.on_audio_chunk = on_audio_chunk
+        self.stall_timeout = stall_timeout
+        self.max_drift_samples = self.chunk_samples * max_drift_chunks
+        self.max_buffer_samples = self.chunk_samples * max_buffer_chunks
 
         self.running = False
         self.mic_stream: Optional[sd.InputStream] = None
@@ -171,23 +177,45 @@ class AudioCaptureStream:
         buffer_mic = np.zeros(0, dtype=np.float32)
         buffer_loop = np.zeros(0, dtype=np.float32)
         last_log_time = 0.0
+        last_mic_time = time.time()
+        last_loop_time = time.time()
 
         while self.running:
+            # 1. Pull incoming audio chunks from queue
             try:
                 src, raw_data, sr = self._audio_queue.get(timeout=0.05)
                 processed = self._resample_to_16k(raw_data, sr) * self.gain
+                now = time.time()
                 if src == "mic":
                     buffer_mic = np.concatenate([buffer_mic, processed])
+                    last_mic_time = now
                 else:
                     buffer_loop = np.concatenate([buffer_loop, processed])
+                    last_loop_time = now
+
+                # Drain any additional queued chunks immediately to minimize latency
+                while True:
+                    try:
+                        src, raw_data, sr = self._audio_queue.get_nowait()
+                        processed = self._resample_to_16k(raw_data, sr) * self.gain
+                        now = time.time()
+                        if src == "mic":
+                            buffer_mic = np.concatenate([buffer_mic, processed])
+                            last_mic_time = now
+                        else:
+                            buffer_loop = np.concatenate([buffer_loop, processed])
+                            last_loop_time = now
+                    except queue.Empty:
+                        break
             except queue.Empty:
                 pass
 
             has_mic = self.mic_stream is not None
             has_loop = self._loopback_active or (self.loopback_stream is not None)
 
-            # Periodic diagnostic heartbeat if sound is playing
             now = time.time()
+
+            # Periodic diagnostic heartbeat if sound is playing
             if now - last_log_time >= 5.0:
                 cur_rms = max(self.current_mic_rms, self.current_loopback_rms)
                 if cur_rms > 0.004:
@@ -199,28 +227,88 @@ class AudioCaptureStream:
                     chunk = buffer_mic[: self.chunk_samples]
                     buffer_mic = buffer_mic[self.chunk_samples :]
                     self._dispatch_chunk(chunk)
+                if len(buffer_mic) > self.max_buffer_samples:
+                    buffer_mic = buffer_mic[-self.max_buffer_samples :]
+
             elif has_loop and not has_mic:
                 while len(buffer_loop) >= self.chunk_samples:
                     chunk = buffer_loop[: self.chunk_samples]
                     buffer_loop = buffer_loop[self.chunk_samples :]
                     self._dispatch_chunk(chunk)
-            elif has_mic and has_loop:
-                # Both streams active: independent sample draining without blocking
-                while len(buffer_mic) >= self.chunk_samples or len(buffer_loop) >= self.chunk_samples:
-                    if len(buffer_mic) >= self.chunk_samples:
-                        m_chunk = buffer_mic[: self.chunk_samples]
-                        buffer_mic = buffer_mic[self.chunk_samples :]
-                    else:
-                        m_chunk = np.zeros(self.chunk_samples, dtype=np.float32)
+                if len(buffer_loop) > self.max_buffer_samples:
+                    buffer_loop = buffer_loop[-self.max_buffer_samples :]
 
-                    if len(buffer_loop) >= self.chunk_samples:
-                        l_chunk = buffer_loop[: self.chunk_samples]
-                        buffer_loop = buffer_loop[self.chunk_samples :]
-                    else:
-                        l_chunk = np.zeros(self.chunk_samples, dtype=np.float32)
+            elif has_mic and has_loop:
+                # 1. Primary synchronous draining: mix when both streams have accumulated a full chunk
+                while len(buffer_mic) >= self.chunk_samples and len(buffer_loop) >= self.chunk_samples:
+                    m_chunk = buffer_mic[: self.chunk_samples]
+                    buffer_mic = buffer_mic[self.chunk_samples :]
+                    l_chunk = buffer_loop[: self.chunk_samples]
+                    buffer_loop = buffer_loop[self.chunk_samples :]
 
                     mixed = np.clip(m_chunk + l_chunk, -1.0, 1.0)
                     self._dispatch_chunk(mixed)
+
+                # 2. Stall fallback / Drift compensation:
+                # If one stream has stopped producing data for > stall_timeout or buffer drift exceeds max_drift_samples,
+                # drain the active stream with zero-padding for the stalled stream to avoid freezing/latency buildup.
+                if len(buffer_mic) >= self.chunk_samples:
+                    loop_stalled = (now - last_loop_time >= self.stall_timeout) or (
+                        len(buffer_mic) - len(buffer_loop) >= self.max_drift_samples and len(buffer_loop) < self.chunk_samples
+                    )
+                    if loop_stalled:
+                        while len(buffer_mic) >= self.chunk_samples:
+                            m_chunk = buffer_mic[: self.chunk_samples]
+                            buffer_mic = buffer_mic[self.chunk_samples :]
+                            if len(buffer_loop) >= self.chunk_samples:
+                                l_chunk = buffer_loop[: self.chunk_samples]
+                                buffer_loop = buffer_loop[self.chunk_samples :]
+                            else:
+                                l_chunk = np.zeros(self.chunk_samples, dtype=np.float32)
+                            mixed = np.clip(m_chunk + l_chunk, -1.0, 1.0)
+                            self._dispatch_chunk(mixed)
+
+                if len(buffer_loop) >= self.chunk_samples:
+                    mic_stalled = (now - last_mic_time >= self.stall_timeout) or (
+                        len(buffer_loop) - len(buffer_mic) >= self.max_drift_samples and len(buffer_mic) < self.chunk_samples
+                    )
+                    if mic_stalled:
+                        while len(buffer_loop) >= self.chunk_samples:
+                            l_chunk = buffer_loop[: self.chunk_samples]
+                            buffer_loop = buffer_loop[self.chunk_samples :]
+                            if len(buffer_mic) >= self.chunk_samples:
+                                m_chunk = buffer_mic[: self.chunk_samples]
+                                buffer_mic = buffer_mic[self.chunk_samples :]
+                            else:
+                                m_chunk = np.zeros(self.chunk_samples, dtype=np.float32)
+                            mixed = np.clip(m_chunk + l_chunk, -1.0, 1.0)
+                            self._dispatch_chunk(mixed)
+
+                # Bound max buffer size to prevent memory leaks and unrecoverable latency lag
+                if len(buffer_mic) > self.max_buffer_samples:
+                    buffer_mic = buffer_mic[-self.max_buffer_samples :]
+                if len(buffer_loop) > self.max_buffer_samples:
+                    buffer_loop = buffer_loop[-self.max_buffer_samples :]
+
+        # Flush remaining complete chunks upon shutdown
+        if has_mic and has_loop:
+            while len(buffer_mic) >= self.chunk_samples and len(buffer_loop) >= self.chunk_samples:
+                m_chunk = buffer_mic[: self.chunk_samples]
+                buffer_mic = buffer_mic[self.chunk_samples :]
+                l_chunk = buffer_loop[: self.chunk_samples]
+                buffer_loop = buffer_loop[self.chunk_samples :]
+                mixed = np.clip(m_chunk + l_chunk, -1.0, 1.0)
+                self._dispatch_chunk(mixed)
+        elif has_mic:
+            while len(buffer_mic) >= self.chunk_samples:
+                chunk = buffer_mic[: self.chunk_samples]
+                buffer_mic = buffer_mic[self.chunk_samples :]
+                self._dispatch_chunk(chunk)
+        elif has_loop:
+            while len(buffer_loop) >= self.chunk_samples:
+                chunk = buffer_loop[: self.chunk_samples]
+                buffer_loop = buffer_loop[self.chunk_samples :]
+                self._dispatch_chunk(chunk)
 
     def _dispatch_chunk(self, chunk: np.ndarray):
         rms = float(np.sqrt(np.mean(chunk ** 2) + 1e-9))
