@@ -60,6 +60,14 @@ class TestAppConfigSerialization(unittest.TestCase):
                 "Loading config from disk dropped hardware_calibrated flag!",
             )
 
+    def test_diarization_sad_threshold_roundtrip(self):
+        """Verify sad_threshold in DiarizationConfig is preserved in roundtrip."""
+        cfg = AppConfig()
+        cfg.diarization.sad_threshold = 0.42
+        d = cfg.to_dict()
+        loaded = AppConfig.from_dict(d)
+        self.assertEqual(loaded.diarization.sad_threshold, 0.42)
+
 
 if __name__ == "__main__":
     unittest.main()

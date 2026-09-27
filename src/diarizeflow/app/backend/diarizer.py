@@ -295,6 +295,26 @@ class NemotronDiarizer:
 
         return probs, pre_embs, valid_embs_len
 
+    def forward_streaming_step(
+        self, audio: np.ndarray, sample_rate: int = 16000
+    ) -> Optional[np.ndarray]:
+        """Execute a streaming forward step on audio window and return frame probabilities.
+
+        Args:
+            audio: 1D numpy array of 16kHz float32 audio.
+            sample_rate: sampling rate (default: 16000).
+
+        Returns:
+            probs array of shape (valid_frames, 8) with posterior probabilities in [0.0, 1.0],
+            or None if inference is unavailable.
+        """
+        if self.session is None or len(audio) < 1600:
+            return None
+
+        mel = self._extract_mel(audio, sample_rate)
+        probs, _, _ = self._forward_chunk(mel)
+        return probs
+
     def _stream_process_audio(
         self, audio: np.ndarray, sample_rate: int = 16000
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
@@ -495,10 +515,11 @@ class NemotronDiarizer:
     def diarize_and_split(
         self, audio: np.ndarray, sample_rate: int = 16000
     ) -> List[Tuple[np.ndarray, str, float]]:
-        """Identify speakers and split the audio if multiple speakers took turns.
+        """Identify speakers and split audio into multi-speaker intervals using Sortformer SAD.
 
-        Uses Sortformer's Low-latency temporal frame predictions to pinpoint the transition point
-        between speakers, preventing multi-speaker mixing when continuous speech accumulates.
+        Replaces rigid split heuristics with neural multi-track Speaker Activity Detection,
+        enabling short-turn detection (<0.65s), multi-speaker turns (>2 speakers),
+        and natural overlap speech handling.
 
         Args:
             audio: 1D numpy array of 16kHz float32 audio.
@@ -507,63 +528,78 @@ class NemotronDiarizer:
         Returns:
             List of (sub_audio, speaker_label, confidence).
         """
-        # If segment is short (< 1.4s) or ONNX is unavailable, identify as single speaker
-        if len(audio) < int(sample_rate * 1.4) or self.session is None:
+        if len(audio) < int(sample_rate * 0.5) or self.session is None:
             spk, conf, _ = self.identify_speaker(audio, sample_rate)
             return [(audio, spk, conf)]
 
         try:
             probs, _ = self._stream_process_audio(audio, sample_rate)
-            if probs is None or len(probs) < 20:
+            if probs is None or len(probs) < 5:
                 spk, conf, _ = self.identify_speaker(audio, sample_rate)
                 return [(audio, spk, conf)]
 
             valid_frames = len(probs)
-            # Frame time: 40ms per Sortformer output frame
-            frame_speakers = np.argmax(probs, axis=-1)  # shape (valid_frames,)
+            active_channels = []
+            for ch in range(min(8, probs.shape[1])):
+                if np.sum(probs[:, ch] >= 0.40) >= 5:  # at least 200ms speech
+                    active_channels.append(ch)
 
-            # Apply temporal median smoothing (5 frames ~ 200ms) to filter out brief phoneme fluctuations
-            smoothed_spks = frame_speakers.copy()
-            for t in range(2, valid_frames - 2):
-                smoothed_spks[t] = int(np.median(frame_speakers[t - 2 : t + 3]))
+            # If single active speaker detected, identify as single segment
+            if len(active_channels) <= 1:
+                spk, conf, _ = self.identify_speaker(audio, sample_rate)
+                return [(audio, spk, conf)]
 
-            # Find candidate speaker transition points
-            # We look for a clear boundary where Speaker A is dominant before t
-            # and Speaker B is dominant after t (each side with >= 15 frames / 0.6s)
-            min_segment_frames = 15
-            split_frame = -1
-            best_boundary_diff = 0.0
+            # Multi-channel SAD: extract intervals for each active speaker
+            intervals = []
+            min_speech_frames = 5   # 200ms
+            max_gap_frames = 6      # 240ms bridge
 
-            for t in range(min_segment_frames, valid_frames - min_segment_frames):
-                left_spk = int(np.bincount(smoothed_spks[:t]).argmax())
-                right_spk = int(np.bincount(smoothed_spks[t:]).argmax())
-                if left_spk != right_spk:
-                    left_ratio = float(np.mean(smoothed_spks[:t] == left_spk))
-                    right_ratio = float(np.mean(smoothed_spks[t:] == right_spk))
-                    score = left_ratio + right_ratio
-                    if score > 1.38 and score > best_boundary_diff:
-                        best_boundary_diff = score
-                        split_frame = t
+            for ch in active_channels:
+                ch_active = (probs[:, ch] >= 0.40).astype(np.int32)
+                # Bridge short gaps
+                gap_start = -1
+                for t in range(valid_frames):
+                    if ch_active[t] == 0:
+                        if gap_start < 0:
+                            gap_start = t
+                    else:
+                        if gap_start >= 0 and (t - gap_start) <= max_gap_frames:
+                            ch_active[gap_start:t] = 1
+                        gap_start = -1
 
-            if split_frame > 0:
-                split_time_s = split_frame * 0.040
-                split_sample = int(split_time_s * sample_rate)
+                # Find contiguous active regions
+                diffs = np.diff(np.pad(ch_active, (1, 1), mode="constant"))
+                starts = np.where(diffs == 1)[0]
+                ends = np.where(diffs == -1)[0]
 
-                # Ensure valid split length (both parts >= 0.65s)
-                if split_sample >= int(0.65 * sample_rate) and (len(audio) - split_sample) >= int(0.65 * sample_rate):
-                    part1 = audio[:split_sample]
-                    part2 = audio[split_sample:]
+                for s, e in zip(starts, ends):
+                    if (e - s) >= min_speech_frames:
+                        intervals.append((s, e, ch))
 
-                    spk1, conf1, _ = self.identify_speaker(part1, sample_rate)
-                    spk2, conf2, _ = self.identify_speaker(part2, sample_rate)
+            if len(intervals) >= 2:
+                # Context padding: 150ms before and after
+                pad_samples = int(0.150 * sample_rate)
+                extracted_segments = []
 
+                for s_frame, e_frame, ch in intervals:
+                    s_samp = max(0, int(s_frame * 0.040 * sample_rate) - pad_samples)
+                    e_samp = min(len(audio), int(e_frame * 0.040 * sample_rate) + pad_samples)
+                    sub_audio = audio[s_samp:e_samp]
+                    if len(sub_audio) >= int(0.20 * sample_rate):
+                        spk, conf, _ = self.identify_speaker(sub_audio, sample_rate)
+                        extracted_segments.append((s_samp, sub_audio, spk, conf))
+
+                if extracted_segments:
+                    # Sort by start sample
+                    extracted_segments.sort(key=lambda x: x[0])
                     print(
-                        f"[★] [Nemotron Low-latency 語者輪替切分] 於 {split_time_s:.2f}s 處檢測到講者交替！"
-                        f"切分為: {spk1} -> {spk2}"
+                        f"[★] [Nemotron Sortformer SAD 多軌切分] 於 {len(audio)/sample_rate:.2f}s 音訊中"
+                        f"分離出 {len(extracted_segments)} 段講者發言: "
+                        f"{' -> '.join([seg[2] for seg in extracted_segments])}"
                     )
-                    return [(part1, spk1, conf1), (part2, spk2, conf2)]
+                    return [(seg[1], seg[2], seg[3]) for seg in extracted_segments]
 
-            # Default: single primary speaker
+            # Fallback to single primary speaker
             spk, conf, _ = self.identify_speaker(audio, sample_rate)
             return [(audio, spk, conf)]
 

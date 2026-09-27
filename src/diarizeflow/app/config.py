@@ -40,6 +40,7 @@ class DiarizationConfig:
     use_fp16: bool = True
     streaming_mode: str = "low_latency"  # "low_latency" (1.04s, 官方預設), "very_low_latency" (0.64s), "ultra_low_latency" (0.32s), "offline" (30.4s)
     speaker_threshold: float = 0.82
+    sad_threshold: float = 0.40  # Sortformer Frame-level SAD 多軌語音活動門檻
     max_speakers: int = 8
 
 
