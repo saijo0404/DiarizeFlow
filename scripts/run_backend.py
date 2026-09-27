@@ -44,7 +44,7 @@ def main():
     print(f"   - 語者分離引擎: Nemotron-3-Diarization")
     print(f"   - 語音辨識 (ASR): SenseVoiceSmall")
     print(f"   - 翻譯 API: {cfg.llm.provider} -> 目標語言: 【{cfg.llm.target_language}】")
-    print(f"   - 網頁透明浮動 HUD / OBS 瀏覽器來源: http://localhost:{args.port}/overlay")
+    print(f"   - API 文件與互動端點: http://localhost:{args.port}/docs")
     print("=" * 70)
 
     uvicorn.run(app, host=args.host, port=args.port, log_level="info")

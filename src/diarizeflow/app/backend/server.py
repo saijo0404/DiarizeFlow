@@ -6,7 +6,7 @@ Provides:
 - /api/devices: Discovers available microphones and system loopback devices
 - /api/config: Reads and updates runtime configuration
 - /api/test/audio: Test pipeline with uploaded or example audio files
-- /overlay: Web-based floating overlay UI for browsers / OBS Studio
+- /: API service status and discovery
 """
 
 import asyncio
@@ -14,8 +14,7 @@ from pathlib import Path
 from typing import List, Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import JSONResponse
 import numpy as np
 import soundfile as sf
 import librosa
@@ -163,18 +162,15 @@ def create_app(config: AppConfig, pipeline: DiarizeFlowPipeline) -> FastAPI:
 
         return {"status": "enqueued", "filename": filename, "duration": round(duration, 2)}
 
-    # --- Web Static Files ---
-    web_dir = Path(__file__).resolve().parent.parent / "frontend" / "web"
-    if web_dir.exists():
-        app.mount("/static", StaticFiles(directory=str(web_dir)), name="static")
-
-        @app.get("/overlay")
-        async def serve_overlay():
-            return FileResponse(web_dir / "index.html")
-
-        @app.get("/")
-        async def serve_root():
-            return FileResponse(web_dir / "index.html")
+    # --- Root API Status ---
+    @app.get("/")
+    async def root():
+        return {
+            "service": "DiarizeFlow API",
+            "version": "0.1.0",
+            "docs": "/docs",
+            "status": "running",
+        }
 
     return app
 

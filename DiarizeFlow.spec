@@ -5,7 +5,7 @@ a = Analysis(
     ['scripts/run_app.py'],
     pathex=['src'],
     binaries=[],
-    datas=[('models/nemotron_diarization/Nemotron-3-Diarization.onnx', 'models/nemotron_diarization'), ('models/sensevoice_small/am.mvn', 'models/sensevoice_small'), ('models/sensevoice_small/chn_jpn_yue_eng_ko_spectok.bpe.model', 'models/sensevoice_small'), ('models/sensevoice_small/config.yaml', 'models/sensevoice_small'), ('models/sensevoice_small/configuration.json', 'models/sensevoice_small'), ('models/sensevoice_small/SenseVoiceSmall.onnx', 'models/sensevoice_small'), ('models/sensevoice_small/SenseVoiceSmall.onnx.data', 'models/sensevoice_small'), ('src/diarizeflow/app/frontend/web', 'diarizeflow/app/frontend/web'), ('config.json', '.')],
+    datas=[('models/nemotron_diarization/Nemotron-3-Diarization.onnx', 'models/nemotron_diarization'), ('models/sensevoice_small/am.mvn', 'models/sensevoice_small'), ('models/sensevoice_small/chn_jpn_yue_eng_ko_spectok.bpe.model', 'models/sensevoice_small'), ('models/sensevoice_small/config.yaml', 'models/sensevoice_small'), ('models/sensevoice_small/configuration.json', 'models/sensevoice_small'), ('models/sensevoice_small/SenseVoiceSmall.onnx', 'models/sensevoice_small'), ('models/sensevoice_small/SenseVoiceSmall.onnx.data', 'models/sensevoice_small'), ('config.json', '.')],
     hiddenimports=['PySide6', 'onnxruntime', 'websockets', 'sentencepiece', 'sounddevice', 'soundcard', 'cffi', 'soundfile', 'kaldi_native_fbank', 'uvicorn', 'fastapi', 'onnx', 'onnxconverter_common'],
     hookspath=[],
     hooksconfig={},

@@ -108,8 +108,7 @@ def build():
 
     print(f"[*] 打包模型總大小: {total_model_bytes / (1024 * 1024):.1f} MB")
 
-    # Add web assets and default config
-    add_data_args.append(f"--add-data=src/diarizeflow/app/frontend/web{sep}diarizeflow/app/frontend/web")
+    # Add default config
     add_data_args.append(f"--add-data=config.json{sep}.")
 
     cmd = [
