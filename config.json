@@ -17,7 +17,9 @@
     "energy_threshold": 0.008,
     "min_speech_ms": 250,
     "silence_timeout_ms": 300,
-    "max_speech_s": 3.5
+    "max_speech_s": 3.5,
+    "pre_pad_ms": 150,
+    "post_pad_ms": 150
   },
   "diarization": {
     "enabled": true,
@@ -26,6 +28,7 @@
     "use_fp16": true,
     "streaming_mode": "low_latency",
     "speaker_threshold": 0.82,
+    "sad_threshold": 0.50,
     "max_speakers": 8
   },
   "asr": {

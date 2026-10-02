@@ -8,12 +8,14 @@ Implements NVIDIA's official Low-Latency Streaming Diarization specification:
 """
 
 from pathlib import Path
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 import librosa
 import numpy as np
 import onnxruntime as ort
 
 from diarizeflow.app.config import DiarizationConfig, resolve_app_path
+
 
 
 # NVIDIA Nemotron-3-Diarization official streaming configurations
@@ -97,8 +99,27 @@ class NemotronDiarizer:
         )
         self.fifo_dim: int = self.active_profile["fifo_len"]
 
+        self._lock = threading.RLock()
         self._load_model()
         self._init_streaming_state()
+
+    def _create_temp_cache(self, clone: bool = True) -> Dict[str, np.ndarray]:
+        """Create an isolated temporary cache dictionary for non-streaming inferences."""
+        with self._lock:
+            if clone:
+                return {
+                    "spkcache": self.spkcache.copy(),
+                    "spkcache_lengths": self.spkcache_lengths.copy(),
+                    "fifo": self.fifo.copy(),
+                    "fifo_lengths": self.fifo_lengths.copy(),
+                }
+            else:
+                return {
+                    "spkcache": np.zeros_like(self.spkcache),
+                    "spkcache_lengths": np.array([0], dtype=np.int64),
+                    "fifo": np.zeros_like(self.fifo),
+                    "fifo_lengths": np.array([0], dtype=np.int64),
+                }
 
     def _init_streaming_state(self):
         """Initialize stateful streaming memory buffers for Sortformer according to active latency profile."""
@@ -124,24 +145,27 @@ class NemotronDiarizer:
 
     def update_config(self, config: DiarizationConfig):
         """Update runtime configuration for diarization."""
-        self.config = config
-        new_thresh = getattr(config, "speaker_threshold", 0.82)
-        self.similarity_threshold = new_thresh if new_thresh >= 0.5 else 0.82
+        with self._lock:
+            self.config = config
+            new_thresh = getattr(config, "speaker_threshold", 0.82)
+            self.similarity_threshold = new_thresh if new_thresh >= 0.5 else 0.82
 
-        new_mode = getattr(config, "streaming_mode", "low_latency")
-        if new_mode != self.streaming_mode and new_mode in NEMOTRON_STREAMING_PROFILES:
-            self.streaming_mode = new_mode
-            self.active_profile = NEMOTRON_STREAMING_PROFILES[new_mode]
-            self._init_streaming_state()
-            print(f"[*] Nemotron 串流分離模式切換為: {self.active_profile['name']}")
-        else:
-            print(f"[*] 語者分離門檻更新為: {self.similarity_threshold:.2f}")
+            new_mode = getattr(config, "streaming_mode", "low_latency")
+            if new_mode != self.streaming_mode and new_mode in NEMOTRON_STREAMING_PROFILES:
+                self.streaming_mode = new_mode
+                self.active_profile = NEMOTRON_STREAMING_PROFILES[new_mode]
+                self._init_streaming_state()
+                print(f"[*] Nemotron 串流分離模式切換為: {self.active_profile['name']}")
+            else:
+                print(f"[*] 語者分離門檻更新為: {self.similarity_threshold:.2f}")
 
     def reset(self):
         """Reset speaker memory profiles and Sortformer streaming cache."""
-        self.known_speakers.clear()
-        self._init_streaming_state()
-        print("[*] Speaker diarization memory and Sortformer streaming cache reset.")
+        with self._lock:
+            self.known_speakers.clear()
+            self._init_streaming_state()
+            print("[*] Speaker diarization memory and Sortformer streaming cache reset.")
+
 
     def _load_model(self):
         """Find and load the appropriate ONNX model (FP16 on GPU, FP32 fallback)."""
@@ -197,12 +221,17 @@ class NemotronDiarizer:
         return log_mel.astype(np.float32)
 
     def _forward_chunk(
-        self, chunk_mel: np.ndarray
+        self,
+        chunk_mel: np.ndarray,
+        cache: Optional[Dict[str, np.ndarray]] = None,
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray], int]:
         """Execute a single Sortformer forward step and update streaming FIFO / SPKCACHE.
 
         Args:
             chunk_mel: mel spectrogram slice, shape (N, 128).
+            cache: Optional isolated temporary cache dict with keys 'spkcache',
+                   'spkcache_lengths', 'fifo', 'fifo_lengths'. If None, the instance's
+                   live streaming cache attributes are read and updated.
 
         Returns:
             Tuple of (channel_probs, pre_encode_embs, valid_embs_len).
@@ -218,82 +247,104 @@ class NemotronDiarizer:
         chunk_input[0, :chunk_len, :] = chunk_mel[:chunk_len]
         chunk_lengths = np.array([chunk_len], dtype=np.int64)
 
-        feed = {
-            "chunk": chunk_input,
-            "chunk_lengths": chunk_lengths,
-            "spkcache": self.spkcache,
-            "spkcache_lengths": self.spkcache_lengths,
-            "fifo": self.fifo,
-            "fifo_lengths": self.fifo_lengths,
-        }
-
-        try:
-            outputs = self.session.run(None, feed)
-        except Exception:
-            # Defensive fallback if FIFO shape differs from graph expectation
-            if self.fifo.shape[1] != 0:
-                feed["fifo"] = np.zeros((1, 0, 512), dtype=dtype)
-                feed["fifo_lengths"] = np.array([0], dtype=np.int64)
-                outputs = self.session.run(None, feed)
-            else:
-                raise
-
-        if not outputs or outputs[0] is None:
-            return None, None, 0
-
-        # Sortformer outputs[0]: shape (1, 528, 8) frame predictions (1 frame per 40ms)
-        raw_preds = outputs[0][0]
-        valid_frames = max(1, chunk_len // 4)
-        sub_preds = raw_preds[:valid_frames, :].astype(np.float32)
-
-        if np.max(sub_preds) > 1.0 or np.min(sub_preds) < 0.0:
-            probs = 1.0 / (1.0 + np.exp(-np.clip(sub_preds, -20.0, 20.0)))
-        else:
-            probs = sub_preds
-
-        # Pre-encode speaker embeddings: outputs[1] shape (1, 264, 512)
-        pre_embs = None
-        valid_embs_len = 0
-        if len(outputs) > 1 and outputs[1] is not None:
-            pre_embs = outputs[1][0]
-            valid_embs_len = (
-                max(1, int(outputs[2][0]))
-                if len(outputs) > 2 and outputs[2] is not None
-                else min(264, max(1, valid_frames // 2))
+        with self._lock:
+            target_spkcache = self.spkcache if cache is None else cache["spkcache"]
+            target_spkcache_lengths = (
+                self.spkcache_lengths if cache is None else cache["spkcache_lengths"]
             )
+            target_fifo = self.fifo if cache is None else cache["fifo"]
+            target_fifo_lengths = self.fifo_lengths if cache is None else cache["fifo_lengths"]
 
-            # Update Sortformer streaming speaker cache buffer (spkcache ring buffer)
-            cur_cache_len = int(self.spkcache_lengths[0])
-            spk_cap = self.spkcache.shape[1]
-            if cur_cache_len + valid_embs_len <= spk_cap:
-                self.spkcache[0, cur_cache_len : cur_cache_len + valid_embs_len, :] = outputs[1][
-                    0, :valid_embs_len, :
-                ].astype(dtype)
-                self.spkcache_lengths = np.array([cur_cache_len + valid_embs_len], dtype=np.int64)
+            feed = {
+                "chunk": chunk_input,
+                "chunk_lengths": chunk_lengths,
+                "spkcache": target_spkcache,
+                "spkcache_lengths": target_spkcache_lengths,
+                "fifo": target_fifo,
+                "fifo_lengths": target_fifo_lengths,
+            }
+
+            try:
+                outputs = self.session.run(None, feed)
+            except Exception:
+                # Defensive fallback if FIFO shape differs from graph expectation
+                if target_fifo.shape[1] != 0:
+                    feed["fifo"] = np.zeros((1, 0, 512), dtype=dtype)
+                    feed["fifo_lengths"] = np.array([0], dtype=np.int64)
+                    outputs = self.session.run(None, feed)
+                else:
+                    raise
+
+            if not outputs or outputs[0] is None:
+                return None, None, 0
+
+            # Sortformer outputs[0]: shape (1, 528, 8) frame predictions (1 frame per 40ms)
+            raw_preds = outputs[0][0]
+            valid_frames = max(1, chunk_len // 4)
+            sub_preds = raw_preds[:valid_frames, :].astype(np.float32)
+
+            if np.max(sub_preds) > 1.0 or np.min(sub_preds) < 0.0:
+                probs = 1.0 / (1.0 + np.exp(-np.clip(sub_preds, -20.0, 20.0)))
             else:
-                keep = max(0, spk_cap - valid_embs_len)
-                if keep > 0:
-                    self.spkcache[0, :keep, :] = self.spkcache[0, cur_cache_len - keep : cur_cache_len, :]
-                self.spkcache[0, keep:spk_cap, :] = outputs[1][0, :valid_embs_len, :].astype(dtype)
-                self.spkcache_lengths = np.array([spk_cap], dtype=np.int64)
+                probs = sub_preds
 
-            # Update FIFO queue buffer if enabled
-            fifo_cap = self.fifo.shape[1]
-            if fifo_cap > 0:
-                cur_fifo_len = int(self.fifo_lengths[0])
-                if cur_fifo_len + valid_embs_len <= fifo_cap:
-                    self.fifo[0, cur_fifo_len : cur_fifo_len + valid_embs_len, :] = outputs[1][
+            # Pre-encode speaker embeddings: outputs[1] shape (1, 264, 512)
+            pre_embs = None
+            valid_embs_len = 0
+            if len(outputs) > 1 and outputs[1] is not None:
+                pre_embs = outputs[1][0]
+                valid_embs_len = (
+                    max(1, int(outputs[2][0]))
+                    if len(outputs) > 2 and outputs[2] is not None
+                    else min(264, max(1, valid_frames // 2))
+                )
+
+                # Update Sortformer streaming speaker cache buffer (spkcache ring buffer)
+                cur_cache_len = int(target_spkcache_lengths[0])
+                spk_cap = target_spkcache.shape[1]
+                if cur_cache_len + valid_embs_len <= spk_cap:
+                    target_spkcache[0, cur_cache_len : cur_cache_len + valid_embs_len, :] = outputs[1][
                         0, :valid_embs_len, :
                     ].astype(dtype)
-                    self.fifo_lengths = np.array([cur_fifo_len + valid_embs_len], dtype=np.int64)
+                    new_spk_lengths = np.array([cur_cache_len + valid_embs_len], dtype=np.int64)
                 else:
-                    keep_f = max(0, fifo_cap - valid_embs_len)
-                    if keep_f > 0:
-                        self.fifo[0, :keep_f, :] = self.fifo[0, cur_fifo_len - keep_f : cur_fifo_len, :]
-                    self.fifo[0, keep_f:fifo_cap, :] = outputs[1][0, :valid_embs_len, :].astype(dtype)
-                    self.fifo_lengths = np.array([fifo_cap], dtype=np.int64)
+                    keep = max(0, spk_cap - valid_embs_len)
+                    if keep > 0:
+                        target_spkcache[0, :keep, :] = target_spkcache[
+                            0, cur_cache_len - keep : cur_cache_len, :
+                        ]
+                    target_spkcache[0, keep:spk_cap, :] = outputs[1][0, :valid_embs_len, :].astype(dtype)
+                    new_spk_lengths = np.array([spk_cap], dtype=np.int64)
 
-        return probs, pre_embs, valid_embs_len
+                if cache is None:
+                    self.spkcache_lengths = new_spk_lengths
+                else:
+                    cache["spkcache_lengths"] = new_spk_lengths
+
+                # Update FIFO queue buffer if enabled
+                fifo_cap = target_fifo.shape[1]
+                if fifo_cap > 0:
+                    cur_fifo_len = int(target_fifo_lengths[0])
+                    if cur_fifo_len + valid_embs_len <= fifo_cap:
+                        target_fifo[0, cur_fifo_len : cur_fifo_len + valid_embs_len, :] = outputs[1][
+                            0, :valid_embs_len, :
+                        ].astype(dtype)
+                        new_fifo_lengths = np.array([cur_fifo_len + valid_embs_len], dtype=np.int64)
+                    else:
+                        keep_f = max(0, fifo_cap - valid_embs_len)
+                        if keep_f > 0:
+                            target_fifo[0, :keep_f, :] = target_fifo[
+                                0, cur_fifo_len - keep_f : cur_fifo_len, :
+                            ]
+                        target_fifo[0, keep_f:fifo_cap, :] = outputs[1][0, :valid_embs_len, :].astype(dtype)
+                        new_fifo_lengths = np.array([fifo_cap], dtype=np.int64)
+
+                    if cache is None:
+                        self.fifo_lengths = new_fifo_lengths
+                    else:
+                        cache["fifo_lengths"] = new_fifo_lengths
+
+            return probs, pre_embs, valid_embs_len
 
     def forward_streaming_step(
         self, audio: np.ndarray, sample_rate: int = 16000
@@ -312,13 +363,18 @@ class NemotronDiarizer:
             return None
 
         mel = self._extract_mel(audio, sample_rate)
-        probs, _, _ = self._forward_chunk(mel)
+        probs, _, _ = self._forward_chunk(mel, cache=None)
         return probs
 
     def _stream_process_audio(
-        self, audio: np.ndarray, sample_rate: int = 16000
+        self,
+        audio: np.ndarray,
+        sample_rate: int = 16000,
+        cache: Optional[Dict[str, np.ndarray]] = None,
     ) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
         """Stream process audio according to the official NVIDIA Low-Latency stepping specification.
+
+        Uses an isolated temporary cache to avoid polluting the persistent streaming state.
 
         Formula:
           - Step stride = CHUNK_LEN * 8 mel frames (e.g. 72 frames = 720ms for low_latency)
@@ -333,13 +389,16 @@ class NemotronDiarizer:
         mel = self._extract_mel(audio, sample_rate)
         total_mel_frames = mel.shape[0]
 
+        if cache is None:
+            cache = self._create_temp_cache(clone=True)
+
         step_frames = self.active_profile.get("mel_chunk_frames", 72)
         lookahead_frames = self.active_profile.get("mel_right_frames", 32)
         buffer_frames = self.active_profile.get("mel_buffer_frames", 104)
 
         # If audio is within single buffer limit, execute one forward pass
         if total_mel_frames <= buffer_frames:
-            probs, pre_embs, vlen = self._forward_chunk(mel)
+            probs, pre_embs, vlen = self._forward_chunk(mel, cache=cache)
             if probs is None:
                 return None, None
             spk_vec = None
@@ -360,7 +419,7 @@ class NemotronDiarizer:
             chunk_slice = mel[start_frame:end_frame]
             is_last_chunk = (end_frame >= total_mel_frames) or ((start_frame + step_frames) >= total_mel_frames)
 
-            chunk_probs, chunk_embs, vlen = self._forward_chunk(chunk_slice)
+            chunk_probs, chunk_embs, vlen = self._forward_chunk(chunk_slice, cache=cache)
             if chunk_probs is not None:
                 # Scored frames exclude look-ahead context unless it's the last chunk of the session
                 # 8 mel frames downsample to 2 Sortformer output frames (40ms per Sortformer output frame)
@@ -477,40 +536,41 @@ class NemotronDiarizer:
         self, spk_vec: np.ndarray, engine_tag: str = "Nemotron 語者分離"
     ) -> Tuple[str, float]:
         """Match speaker against known speaker database using cosine similarity, or register a new speaker."""
-        if not self.known_speakers:
-            self.known_speakers.append({"id": 1, "emb": spk_vec, "count": 1})
-            speaker_label = "講者 1"
-            print(f"[+] [{engine_tag}] 註冊首位發話者: {speaker_label}")
-            return speaker_label, 1.0
+        with self._lock:
+            if not self.known_speakers:
+                self.known_speakers.append({"id": 1, "emb": spk_vec, "count": 1})
+                speaker_label = "講者 1"
+                print(f"[+] [{engine_tag}] 註冊首位發話者: {speaker_label}")
+                return speaker_label, 1.0
 
-        sims = [float(np.dot(spk_vec, spk["emb"])) for spk in self.known_speakers]
-        best_idx = int(np.argmax(sims))
-        best_sim = sims[best_idx]
+            sims = [float(np.dot(spk_vec, spk["emb"])) for spk in self.known_speakers]
+            best_idx = int(np.argmax(sims))
+            best_sim = sims[best_idx]
 
-        if best_sim >= self.similarity_threshold:
-            spk = self.known_speakers[best_idx]
-            spk["emb"] = 0.85 * spk["emb"] + 0.15 * spk_vec
-            spk_n = float(np.linalg.norm(spk["emb"]))
-            if spk_n > 1e-6:
-                spk["emb"] /= spk_n
-            spk["count"] += 1
-            speaker_label = f"講者 {spk['id']}"
-            print(f"[*] [{engine_tag}] 判定為 {speaker_label} (聲線相似度: {best_sim:.3f})")
-            return speaker_label, best_sim
-        else:
-            if len(self.known_speakers) < self.config.max_speakers:
-                new_id = len(self.known_speakers) + 1
-                self.known_speakers.append({"id": new_id, "emb": spk_vec, "count": 1})
-                speaker_label = f"講者 {new_id}"
-                print(
-                    f"[+] [{engine_tag}] 檢測到新聲線！註冊為 {speaker_label} "
-                    f"(最高相似度: {best_sim:.3f} < 門檻 {self.similarity_threshold:.2f})"
-                )
+            if best_sim >= self.similarity_threshold:
+                spk = self.known_speakers[best_idx]
+                spk["emb"] = 0.85 * spk["emb"] + 0.15 * spk_vec
+                spk_n = float(np.linalg.norm(spk["emb"]))
+                if spk_n > 1e-6:
+                    spk["emb"] /= spk_n
+                spk["count"] += 1
+                speaker_label = f"講者 {spk['id']}"
+                print(f"[*] [{engine_tag}] 判定為 {speaker_label} (聲線相似度: {best_sim:.3f})")
                 return speaker_label, best_sim
             else:
-                speaker_label = f"講者 {self.known_speakers[best_idx]['id']}"
-                print(f"[*] [{engine_tag}] 達到講者上限，指派最接近的 {speaker_label} (相似度: {best_sim:.3f})")
-                return speaker_label, best_sim
+                if len(self.known_speakers) < self.config.max_speakers:
+                    new_id = len(self.known_speakers) + 1
+                    self.known_speakers.append({"id": new_id, "emb": spk_vec, "count": 1})
+                    speaker_label = f"講者 {new_id}"
+                    print(
+                        f"[+] [{engine_tag}] 檢測到新聲線！註冊為 {speaker_label} "
+                        f"(最高相似度: {best_sim:.3f} < 門檻 {self.similarity_threshold:.2f})"
+                    )
+                    return speaker_label, best_sim
+                else:
+                    speaker_label = f"講者 {self.known_speakers[best_idx]['id']}"
+                    print(f"[*] [{engine_tag}] 達到講者上限，指派最接近的 {speaker_label} (相似度: {best_sim:.3f})")
+                    return speaker_label, best_sim
 
     def diarize_and_split(
         self, audio: np.ndarray, sample_rate: int = 16000

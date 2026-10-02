@@ -251,27 +251,27 @@ class DiarizeFlowPipeline:
                 if seg_rms < 0.004:
                     continue
 
-                # 1. Speaker Diarization
-                # If utterance duration is >= 2.2s, run diarize_and_split to detect multi-speaker turns inside
-                if duration >= 2.2 and self.diarizer is not None and hasattr(self.diarizer, "diarize_and_split"):
-                    t_diar_start = time.perf_counter()
-                    speaker_segments = await asyncio.to_thread(
-                        self.diarizer.diarize_and_split,
-                        proc_audio,
-                        self.config.audio.sample_rate,
-                    )
-                    t_diar_ms = (time.perf_counter() - t_diar_start) * 1000.0
-                elif spk_label is not None and conf is not None:
-                    speaker_segments = [(proc_audio, spk_label, conf)]
-                    t_diar_ms = 0.0
+                # 1. Speaker Diarization (asynchronously executed in worker thread, no duplicate inference)
+                t_diar_start = time.perf_counter()
+                if self.diarizer is not None:
+                    if duration >= 2.2 and hasattr(self.diarizer, "diarize_and_split"):
+                        speaker_segments = await asyncio.to_thread(
+                            self.diarizer.diarize_and_split,
+                            proc_audio,
+                            self.config.audio.sample_rate,
+                        )
+                    elif hasattr(self.diarizer, "identify_speaker"):
+                        spk, c_val, _ = await asyncio.to_thread(
+                            self.diarizer.identify_speaker,
+                            proc_audio,
+                            self.config.audio.sample_rate,
+                        )
+                        speaker_segments = [(proc_audio, spk, c_val)]
+                    else:
+                        speaker_segments = [(proc_audio, spk_label or "講者 1", conf if conf is not None else 1.0)]
                 else:
-                    t_diar_start = time.perf_counter()
-                    speaker_segments = await asyncio.to_thread(
-                        self.diarizer.diarize_and_split,
-                        proc_audio,
-                        self.config.audio.sample_rate,
-                    )
-                    t_diar_ms = (time.perf_counter() - t_diar_start) * 1000.0
+                    speaker_segments = [(proc_audio, spk_label or "講者 1", conf if conf is not None else 1.0)]
+                t_diar_ms = (time.perf_counter() - t_diar_start) * 1000.0
 
                 for seg_audio, speaker_label, confidence in speaker_segments:
                     seg_dur = len(seg_audio) / self.config.audio.sample_rate
@@ -365,10 +365,12 @@ class DiarizeFlowPipeline:
             self.asr.config = new_config.asr
         self.translator.config = new_config.llm
         if hasattr(self, "segmenter"):
-            self.segmenter.sad_threshold = getattr(new_config.diarization, "sad_threshold", 0.40)
+            self.segmenter.sad_threshold = getattr(new_config.diarization, "sad_threshold", 0.50)
             self.segmenter.silence_timeout_ms = new_config.vad.silence_timeout_ms
             self.segmenter.min_speech_ms = new_config.vad.min_speech_ms
             self.segmenter.max_speech_s = new_config.vad.max_speech_s
+            self.segmenter.pre_pad_ms = getattr(new_config.vad, "pre_pad_ms", 150)
+            self.segmenter.post_pad_ms = getattr(new_config.vad, "post_pad_ms", 150)
             self.segmenter.energy_threshold = new_config.vad.energy_threshold
         if hasattr(self, "stream_agc"):
             self.stream_agc.target_rms = getattr(new_config.audio, "agc_target_rms", 0.06)

@@ -79,6 +79,7 @@ class StreamingDiarizationSegmenter:
         post_pad_ms: int = 150,
         diarizer: Optional[Any] = None,
         on_utterance: Optional[Callable[[np.ndarray, str, float, float], None]] = None,
+        enable_deep_identification: bool = False,
     ):
         self.sample_rate = sample_rate
         self.sad_threshold = sad_threshold
@@ -89,6 +90,7 @@ class StreamingDiarizationSegmenter:
         self.post_pad_ms = post_pad_ms
         self.diarizer = diarizer
         self.on_utterance = on_utterance
+        self.enable_deep_identification = enable_deep_identification
 
         # Sample limits
         self.silence_timeout_samples = int((silence_timeout_ms / 1000.0) * self.sample_rate)
@@ -313,8 +315,13 @@ class StreamingDiarizationSegmenter:
         return completed
 
     def _identify_speaker_segment(self, audio: np.ndarray, channel_hint: int) -> Tuple[str, float]:
-        """Identify speaker identity using diarizer's voiceprint database or fallback."""
-        if self.diarizer is not None and hasattr(self.diarizer, "identify_speaker"):
+        """Identify speaker identity using channel hint or deep voiceprint.
+
+        By default, returns lightweight channel-based speaker label to prevent blocking
+        the real-time audio chunk worker. Asynchronous speaker identification or
+        diarize_and_split is executed downstream in the pipeline worker.
+        """
+        if self.enable_deep_identification and self.diarizer is not None and hasattr(self.diarizer, "identify_speaker"):
             try:
                 spk, conf, _ = self.diarizer.identify_speaker(audio, self.sample_rate)
                 return spk, conf

@@ -367,6 +367,80 @@ class TestDiarizationDrivenSegmenter(unittest.TestCase):
         self.assertEqual(len(emitted), 0)
         self.assertFalse(segmenter.channel_buffers[0].in_speech)
 
+    def test_segmenter_non_blocking_does_not_call_identify_speaker(self):
+        """Verify that with enable_deep_identification=False, identify_speaker is not called synchronously."""
+        emitted = []
+
+        def on_utterance(audio_seg, spk_label, conf, duration):
+            emitted.append((audio_seg, spk_label, conf, duration))
+
+        mock_diarizer = MagicMock()
+        mock_diarizer.session = MagicMock()
+        active_probs = np.zeros((6, 8), dtype=np.float32)
+        active_probs[:, 2] = 0.95  # Channel 2 active
+        silence_probs = np.zeros((6, 8), dtype=np.float32)
+
+        mock_diarizer.forward_streaming_step.side_effect = [
+            active_probs, active_probs,
+            silence_probs, silence_probs,
+        ]
+
+        segmenter = StreamingDiarizationSegmenter(
+            sample_rate=16000,
+            sad_threshold=0.50,
+            silence_timeout_ms=300,
+            min_speech_ms=200,
+            diarizer=mock_diarizer,
+            on_utterance=on_utterance,
+            enable_deep_identification=False,
+        )
+
+        chunk = np.ones(4000, dtype=np.float32) * 0.15
+        silence = np.zeros(4000, dtype=np.float32)
+
+        segmenter.process_chunk(chunk, rms=0.15)
+        segmenter.process_chunk(chunk, rms=0.15)
+        segmenter.process_chunk(silence, rms=0.0)
+        segmenter.process_chunk(silence, rms=0.0)
+
+        self.assertEqual(len(emitted), 1)
+        # Channel 2 corresponds to "講者 3"
+        self.assertEqual(emitted[0][1], "講者 3")
+        # Ensure heavy synchronous identify_speaker was NEVER called inside chunk processing!
+        mock_diarizer.identify_speaker.assert_not_called()
+
+    def test_diarizer_cache_isolation_and_lock(self):
+        """Verify that NemotronDiarizer uses temporary cache for non-streaming inference without cache pollution."""
+        cfg = DiarizationConfig()
+        diarizer = NemotronDiarizer(cfg)
+
+        # Mock session to avoid needing real ONNX weights
+        mock_sess = MagicMock()
+        # Mock outputs: outputs[0] = (1, 528, 8), outputs[1] = (1, 264, 512), outputs[2] = [20]
+        out0 = np.zeros((1, 528, 8), dtype=np.float32)
+        out1 = np.ones((1, 264, 512), dtype=np.float32) * 0.77
+        out2 = np.array([20], dtype=np.int64)
+        mock_sess.run.return_value = [out0, out1, out2]
+        mock_sess.get_inputs.return_value = []
+        diarizer.session = mock_sess
+
+        # Mark streaming live cache with a distinctive sentinel value
+        diarizer.spkcache.fill(0.1234)
+        diarizer.spkcache_lengths[0] = 42
+
+        # Create audio and run _stream_process_audio
+        test_audio = np.ones(16000, dtype=np.float32) * 0.1
+        probs, spk_vec = diarizer._stream_process_audio(test_audio, 16000)
+
+        # Crucial check: Live streaming cache should NOT be overwritten or polluted!
+        self.assertEqual(diarizer.spkcache_lengths[0], 42)
+        self.assertTrue(np.allclose(diarizer.spkcache[0, 0, :10], 0.1234))
+
+        # Test lock exists and is re-entrant
+        import threading
+        self.assertIsInstance(diarizer._lock, type(threading.RLock()))
+
 
 if __name__ == "__main__":
     unittest.main()
+

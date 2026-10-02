@@ -30,6 +30,9 @@ class VADConfig:
     min_speech_ms: int = 250
     silence_timeout_ms: int = 300   # 靜音停頓判定間隔 (由 400ms 下調至 300ms，換句更明快)
     max_speech_s: float = 3.5       # 音訊累積上限 (由 8.5s 縮短至 3.5s，字句快速彈出且大幅減少多講者混雜)
+    pre_pad_ms: int = 150           # 語音前綴緩衝 (保留字首輔音避免吞字)
+    post_pad_ms: int = 150          # 語音後綴緩衝 (保留字尾音節避免吞字)
+
 
 
 @dataclass
