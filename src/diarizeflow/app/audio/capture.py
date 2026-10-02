@@ -340,16 +340,27 @@ class AudioCaptureStream:
             self._loopback_active = True
             sr = 48000
             chunk_frames = int(sr * (self.chunk_ms / 1000.0))
+            hw_buffer_frames = int(sr * 1.0)  # 1.0s hardware buffer headroom to prevent WASAPI overruns
 
-            with target_mic.recorder(samplerate=sr, channels=2) as rec:
-                while self.running:
-                    data = rec.record(numframes=chunk_frames)
-                    if not self.running:
-                        break
-                    arr = np.ascontiguousarray(data, dtype=np.float32)
-                    rms = float(np.sqrt(np.mean(arr ** 2) + 1e-9))
-                    self.current_loopback_rms = min(1.0, rms * 5.0)
-                    self._audio_queue.put(("loopback", arr, sr))
+            import warnings
+            with warnings.catch_warnings():
+                warnings.filterwarnings("ignore", message=".*data discontinuity in recording.*")
+                with target_mic.recorder(samplerate=sr, channels=2, blocksize=hw_buffer_frames) as rec:
+                    while self.running:
+                        data = rec.record(numframes=chunk_frames)
+                        if not self.running:
+                            break
+                        arr = np.ascontiguousarray(data, dtype=np.float32)
+                        rms = float(np.sqrt(np.mean(arr ** 2) + 1e-9))
+                        self.current_loopback_rms = min(1.0, rms * 5.0)
+                        try:
+                            self._audio_queue.put_nowait(("loopback", arr, sr))
+                        except queue.Full:
+                            try:
+                                self._audio_queue.get_nowait()
+                            except queue.Empty:
+                                pass
+                            self._audio_queue.put_nowait(("loopback", arr, sr))
         except Exception as e:
             print(f"[!] 原生 WASAPI Loopback 錄音異常: {e}")
             self._loopback_active = False

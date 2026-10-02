@@ -14,7 +14,7 @@ import uuid
 import numpy as np
 
 from diarizeflow.app.config import AppConfig
-from diarizeflow.app.audio.vad import EnergyVADSegmenter
+from diarizeflow.app.audio.segmenter import StreamingDiarizationSegmenter
 from diarizeflow.app.audio.agc import StreamingInputAGC
 from diarizeflow.app.backend.diarizer import NemotronDiarizer
 from diarizeflow.app.backend.asr import SenseVoiceASR, create_asr_engine
@@ -55,33 +55,45 @@ class DiarizeFlowPipeline:
         self.asr = create_asr_engine(self.config.asr)
         self.translator = LLMTranslator(self.config.llm)
 
-        # Setup Real-time Streaming Input AGC (Dynamic Volume Leveling for VAD)
+        # Setup Real-time Streaming Input AGC (Dynamic Volume Leveling)
         self.stream_agc = StreamingInputAGC(
             target_rms=getattr(self.config.audio, "agc_target_rms", 0.06),
             max_gain=getattr(self.config.audio, "agc_max_gain", 25.0),
             min_gain=getattr(self.config.audio, "agc_min_gain", 0.15),
         )
 
-        # Setup VAD segmenter
-        self.vad = EnergyVADSegmenter(
+        # Setup Streaming Diarization-Driven Segmenter (replaces traditional VAD)
+        self.segmenter = StreamingDiarizationSegmenter(
             sample_rate=self.config.audio.sample_rate,
-            energy_threshold=self.config.vad.energy_threshold,
-            min_speech_ms=self.config.vad.min_speech_ms,
+            sad_threshold=getattr(self.config.diarization, "sad_threshold", 0.50),
             silence_timeout_ms=self.config.vad.silence_timeout_ms,
+            min_speech_ms=self.config.vad.min_speech_ms,
             max_speech_s=self.config.vad.max_speech_s,
-            on_speech_utterance=self._on_speech_utterance,
+            pre_pad_ms=getattr(self.config.vad, "pre_pad_ms", 150),
+            post_pad_ms=getattr(self.config.vad, "post_pad_ms", 150),
+            diarizer=self.diarizer,
+            on_utterance=self._on_diarized_utterance,
         )
+        # Keep self.vad alias for backward compatibility
+        self.vad = self.segmenter
 
         self._speech_queue: queue.Queue = queue.Queue(maxsize=100)
+        self._raw_chunk_queue: queue.Queue = queue.Queue(maxsize=200)
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._worker_task: Optional[asyncio.Task] = None
+        self._segmenter_thread: Optional[threading.Thread] = None
         self.is_running = False
 
     def start(self, loop: Optional[asyncio.AbstractEventLoop] = None):
-        """Start the async pipeline worker."""
+        """Start the async pipeline worker and dedicated segmenter worker thread."""
         if self.is_running:
             return
         self.is_running = True
+
+        if self._segmenter_thread is None or not self._segmenter_thread.is_alive():
+            self._segmenter_thread = threading.Thread(target=self._segmenter_worker, daemon=True)
+            self._segmenter_thread.start()
+
         if loop is not None:
             self._loop = loop
             self._worker_task = self._loop.create_task(self._pipeline_worker())
@@ -103,10 +115,18 @@ class DiarizeFlowPipeline:
     def stop(self):
         """Stop the pipeline worker."""
         self.is_running = False
+        try:
+            self._raw_chunk_queue.put_nowait(None)
+        except Exception:
+            pass
+        if self._segmenter_thread and self._segmenter_thread.is_alive():
+            self._segmenter_thread.join(timeout=0.5)
+        self._segmenter_thread = None
+
         if self._worker_task:
             self._worker_task.cancel()
         try:
-            self._speech_queue.put_nowait((None, 0.0, 0.0))
+            self._speech_queue.put_nowait(None)
         except Exception:
             pass
         if self._loop and self._loop.is_running():
@@ -146,7 +166,7 @@ class DiarizeFlowPipeline:
         self.process_audio_chunk(chunk, rms)
 
     def process_audio_chunk(self, chunk: np.ndarray, rms: Optional[float] = None):
-        """Ingest real-time 16kHz mono audio chunk."""
+        """Ingest real-time 16kHz mono audio chunk asynchronously into non-blocking queue."""
         if not self.is_running:
             print("[*] Audio received while pipeline inactive. Auto-starting pipeline...")
             self.start()
@@ -154,22 +174,59 @@ class DiarizeFlowPipeline:
         if rms is None:
             rms = float(np.sqrt(np.mean(chunk ** 2) + 1e-9))
 
-        # Real-time Streaming AGC: dynamically boost quiet audio & tame loud audio before VAD
-        proc_chunk = chunk
-        proc_rms = rms
-        if getattr(self.config.audio, "agc_enabled", True):
-            proc_chunk, current_gain, proc_rms = self.stream_agc.process(chunk)
+        try:
+            self._raw_chunk_queue.put_nowait((chunk, rms))
+        except queue.Full:
+            try:
+                self._raw_chunk_queue.get_nowait()
+            except queue.Empty:
+                pass
+            self._raw_chunk_queue.put_nowait((chunk, rms))
 
-        self.vad.process_chunk(proc_chunk, proc_rms)
+    def _segmenter_worker(self):
+        """Dedicated background thread pulling raw audio chunks and executing streaming SAD."""
+        while self.is_running:
+            try:
+                item = self._raw_chunk_queue.get(timeout=0.1)
+            except queue.Empty:
+                continue
+            if not self.is_running or item is None:
+                break
 
-    def _on_speech_utterance(self, audio_segment: np.ndarray, duration: float):
-        """Callback from VAD when a speech utterance completes."""
+            chunk, rms = item
+            try:
+                # Real-time Streaming AGC: dynamically boost quiet audio & tame loud audio before SAD
+                proc_chunk = chunk
+                proc_rms = rms
+                if getattr(self.config.audio, "agc_enabled", True):
+                    proc_chunk, current_gain, proc_rms = self.stream_agc.process(chunk)
+
+                # Ingest into streaming diarization-driven segmenter (multi-track SAD)
+                self.segmenter.process_chunk(proc_chunk, proc_rms)
+            except Exception as e:
+                print(f"[!] Error in segmenter worker: {e}")
+
+    def _on_diarized_utterance(
+        self, audio_segment: np.ndarray, speaker_label: str, confidence: float, duration: float
+    ):
+        """Callback from StreamingDiarizationSegmenter when a speaker's utterance completes."""
         if not self.is_running:
             return
 
-        print(f"[*] 檢測到語音活動: 長度 {duration:.2f} 秒, 正在送入辨識...")
+        print(f"[*] [Sortformer SAD] 檢測到講者發話 ({speaker_label}): 長度 {duration:.2f} 秒, 正在送入辨識...")
         try:
-            self._speech_queue.put_nowait((audio_segment, duration, time.time()))
+            self._speech_queue.put_nowait((audio_segment, speaker_label, confidence, duration, time.time()))
+        except queue.Full:
+            print("[!] 語音隊列已滿，丟棄片段")
+
+    def _on_speech_utterance(self, audio_segment: np.ndarray, duration: float):
+        """Direct audio utterance ingestion (e.g. for whole-audio testing / API)."""
+        if not self.is_running:
+            return
+
+        print(f"[*] 檢測到音訊輸入: 長度 {duration:.2f} 秒, 正在送入分離與辨識...")
+        try:
+            self._speech_queue.put_nowait((audio_segment, None, None, duration, time.time()))
         except queue.Full:
             print("[!] 語音隊列已滿，丟棄片段")
 
@@ -180,7 +237,7 @@ class DiarizeFlowPipeline:
                 item = await asyncio.to_thread(self._speech_queue.get)
                 if not self.is_running or item is None or item[0] is None:
                     break
-                audio_segment, duration, timestamp = item
+                audio_segment, spk_label, conf, duration, timestamp = item
             except (asyncio.CancelledError, Exception):
                 if not self.is_running:
                     break
@@ -188,21 +245,37 @@ class DiarizeFlowPipeline:
 
             t_process_start = time.perf_counter()
             try:
-                # Audio segment has already been dynamically normalized by StreamingInputAGC in process_audio_chunk
                 proc_audio = audio_segment
+                seg_rms = float(np.sqrt(np.mean(proc_audio ** 2) + 1e-9))
+                # Skip segments whose energy is at the ambient noise floor
+                if seg_rms < 0.004:
+                    continue
 
-                # 1. Speaker Diarization & Turn Segmentation (Detects single or multiple speakers)
+                # 1. Speaker Diarization (asynchronously executed in worker thread, no duplicate inference)
                 t_diar_start = time.perf_counter()
-                speaker_segments = await asyncio.to_thread(
-                    self.diarizer.diarize_and_split,
-                    proc_audio,
-                    self.config.audio.sample_rate,
-                )
+                if self.diarizer is not None:
+                    if duration >= 2.2 and hasattr(self.diarizer, "diarize_and_split"):
+                        speaker_segments = await asyncio.to_thread(
+                            self.diarizer.diarize_and_split,
+                            proc_audio,
+                            self.config.audio.sample_rate,
+                        )
+                    elif hasattr(self.diarizer, "identify_speaker"):
+                        spk, c_val, _ = await asyncio.to_thread(
+                            self.diarizer.identify_speaker,
+                            proc_audio,
+                            self.config.audio.sample_rate,
+                        )
+                        speaker_segments = [(proc_audio, spk, c_val)]
+                    else:
+                        speaker_segments = [(proc_audio, spk_label or "講者 1", conf if conf is not None else 1.0)]
+                else:
+                    speaker_segments = [(proc_audio, spk_label or "講者 1", conf if conf is not None else 1.0)]
                 t_diar_ms = (time.perf_counter() - t_diar_start) * 1000.0
 
                 for seg_audio, speaker_label, confidence in speaker_segments:
                     seg_dur = len(seg_audio) / self.config.audio.sample_rate
-                    if seg_dur < 0.25:
+                    if seg_dur < 0.20:
                         continue
 
                     # 2. ASR Transcription for this speaker segment
@@ -216,6 +289,12 @@ class DiarizeFlowPipeline:
 
                     if not orig_text or not orig_text.strip():
                         print(f"[*] 語音辨識為空 (ASR耗時: {t_asr_ms:.0f}ms，可能為背景雜音或非人聲)")
+                        continue
+
+                    clean_orig = orig_text.strip()
+                    # Reject isolated single-token noise hallucinations on longer segments with low acoustic energy
+                    if len(clean_orig) <= 1 and seg_dur >= 1.5 and seg_rms < 0.015:
+                        print(f"[*] 略過單字雜音幻覺 (長度 {seg_dur:.2f}s, 辨識='{clean_orig}', ASR耗時: {t_asr_ms:.0f}ms)")
                         continue
 
                     print(f"[{speaker_label}] [{detected_lang.upper()}]: {orig_text}")
@@ -285,10 +364,14 @@ class DiarizeFlowPipeline:
         else:
             self.asr.config = new_config.asr
         self.translator.config = new_config.llm
-        self.vad.energy_threshold = new_config.vad.energy_threshold
-        self.vad.min_speech_ms = new_config.vad.min_speech_ms
-        self.vad.silence_timeout_ms = new_config.vad.silence_timeout_ms
-        self.vad.max_speech_s = new_config.vad.max_speech_s
+        if hasattr(self, "segmenter"):
+            self.segmenter.sad_threshold = getattr(new_config.diarization, "sad_threshold", 0.50)
+            self.segmenter.silence_timeout_ms = new_config.vad.silence_timeout_ms
+            self.segmenter.min_speech_ms = new_config.vad.min_speech_ms
+            self.segmenter.max_speech_s = new_config.vad.max_speech_s
+            self.segmenter.pre_pad_ms = getattr(new_config.vad, "pre_pad_ms", 150)
+            self.segmenter.post_pad_ms = getattr(new_config.vad, "post_pad_ms", 150)
+            self.segmenter.energy_threshold = new_config.vad.energy_threshold
         if hasattr(self, "stream_agc"):
             self.stream_agc.target_rms = getattr(new_config.audio, "agc_target_rms", 0.06)
             self.stream_agc.max_gain = getattr(new_config.audio, "agc_max_gain", 25.0)

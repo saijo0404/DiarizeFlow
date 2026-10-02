@@ -60,6 +60,39 @@ class TestAppConfigSerialization(unittest.TestCase):
                 "Loading config from disk dropped hardware_calibrated flag!",
             )
 
+    def test_diarization_sad_threshold_roundtrip(self):
+        """Verify sad_threshold in DiarizationConfig is preserved in roundtrip."""
+        cfg = AppConfig()
+        cfg.diarization.sad_threshold = 0.42
+        d = cfg.to_dict()
+        loaded = AppConfig.from_dict(d)
+        self.assertEqual(loaded.diarization.sad_threshold, 0.42)
+
+    def test_vad_padding_roundtrip(self):
+        """Verify pre_pad_ms and post_pad_ms in VADConfig are preserved in roundtrip."""
+        cfg = AppConfig()
+        self.assertEqual(cfg.vad.pre_pad_ms, 150)
+        self.assertEqual(cfg.vad.post_pad_ms, 150)
+        cfg.vad.pre_pad_ms = 220
+        cfg.vad.post_pad_ms = 180
+        d = cfg.to_dict()
+        loaded = AppConfig.from_dict(d)
+        self.assertEqual(loaded.vad.pre_pad_ms, 220)
+        self.assertEqual(loaded.vad.post_pad_ms, 180)
+
+    def test_default_config_json_contents(self):
+        """Verify config.json includes sad_threshold, pre_pad_ms, and post_pad_ms."""
+        config_path = Path(__file__).resolve().parent.parent / "config.json"
+        with open(config_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        self.assertIn("sad_threshold", data.get("diarization", {}))
+        self.assertEqual(data["diarization"]["sad_threshold"], 0.50)
+        self.assertIn("pre_pad_ms", data.get("vad", {}))
+        self.assertEqual(data["vad"]["pre_pad_ms"], 150)
+        self.assertIn("post_pad_ms", data.get("vad", {}))
+        self.assertEqual(data["vad"]["post_pad_ms"], 150)
+
 
 if __name__ == "__main__":
     unittest.main()
+
