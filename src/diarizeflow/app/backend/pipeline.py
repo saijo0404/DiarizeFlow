@@ -273,12 +273,95 @@ class DiarizeFlowPipeline:
                     speaker_segments = [(proc_audio, spk_label or "講者 1", conf if conf is not None else 1.0)]
                 t_diar_ms = (time.perf_counter() - t_diar_start) * 1000.0
 
+                # 2. Sequential ASR & Concurrent LLM Translation + Subtitle Broadcast
+                target_lang = self.config.llm.target_language
+                translation_tasks = []
+
+                async def _translate_and_broadcast(item: dict):
+                    t_trans_start = time.perf_counter()
+                    try:
+                        translated_text = await self.translator.translate(
+                            text=item["orig_text"],
+                            target_language=target_lang,
+                            source_language=item["detected_lang"],
+                        )
+                    except Exception as trans_err:
+                        print(f"[!] Translation error: {trans_err}")
+                        translated_text = item["orig_text"]
+
+                    t_trans_ms = (time.perf_counter() - t_trans_start) * 1000.0
+                    t_total_ms = (time.perf_counter() - t_process_start) * 1000.0
+                    print(f"  └─> [翻譯 ({target_lang})]: {translated_text}")
+
+                    is_fw = hasattr(self.asr, "active_precision")
+                    asr_tag = (
+                        f"Whisper {self.asr.active_precision.upper()}"
+                        if is_fw
+                        else (
+                            "SenseVoice FP16"
+                            if getattr(self.asr, "is_fp16", False)
+                            else (
+                                "SenseVoice INT8"
+                                if "int8" in str(getattr(self.config.asr, "model_path", "")).lower()
+                                else "SenseVoice FP32"
+                            )
+                        )
+                    )
+                    diar_tag = (
+                        "Nemotron FP16"
+                        if getattr(self.diarizer, "is_fp16", False)
+                        else (
+                            "Nemotron INT8"
+                            if "int8" in str(getattr(self.config.diarization, "model_path", "")).lower()
+                            else "Nemotron FP32"
+                        )
+                    )
+
+                    print(
+                        f"  ⚡ [延遲診斷] 音訊: {item['seg_dur']:.2f}s | "
+                        f"ASR辨識 ({asr_tag}): {item['t_asr_ms']:.0f}ms | "
+                        f"語者分離 ({diar_tag}): {t_diar_ms:.0f}ms | "
+                        f"LLM翻譯: {t_trans_ms:.0f}ms | 總處理耗時: {t_total_ms:.0f}ms"
+                    )
+
+                    latency_dict = {
+                        "duration_s": round(item["seg_dur"], 2),
+                        "asr_ms": round(item["t_asr_ms"], 1),
+                        "diar_ms": round(t_diar_ms, 1),
+                        "trans_ms": round(t_trans_ms, 1),
+                        "total_ms": round(t_total_ms, 1),
+                    }
+
+                    # Construct Subtitle Event
+                    event = SubtitleEvent(
+                        id=str(uuid.uuid4())[:8],
+                        speaker=item["speaker_label"],
+                        original_text=item["orig_text"],
+                        translated_text=translated_text,
+                        source_lang=item["detected_lang"],
+                        target_lang=target_lang,
+                        confidence=item["confidence"],
+                        duration=round(item["seg_dur"], 2),
+                        timestamp=timestamp,
+                        latency=latency_dict,
+                    )
+
+                    # Broadcast to connected UI clients
+                    if self.on_subtitle_broadcast:
+                        try:
+                            if asyncio.iscoroutinefunction(self.on_subtitle_broadcast):
+                                await self.on_subtitle_broadcast(event)
+                            else:
+                                self.on_subtitle_broadcast(event)
+                        except Exception as e:
+                            print(f"[!] Error broadcasting subtitle event: {e}")
+
                 for seg_audio, speaker_label, confidence in speaker_segments:
                     seg_dur = len(seg_audio) / self.config.audio.sample_rate
                     if seg_dur < 0.20:
                         continue
 
-                    # 2. ASR Transcription for this speaker segment
+                    # ASR Transcription for this speaker segment
                     t_asr_start = time.perf_counter()
                     orig_text, detected_lang = await asyncio.to_thread(
                         self.asr.transcribe,
@@ -299,56 +382,28 @@ class DiarizeFlowPipeline:
 
                     print(f"[{speaker_label}] [{detected_lang.upper()}]: {orig_text}")
 
-                    # 3. LLM Translation
-                    target_lang = self.config.llm.target_language
-                    t_trans_start = time.perf_counter()
-                    translated_text = await self.translator.translate(
-                        text=orig_text,
-                        target_language=target_lang,
-                        source_language=detected_lang,
-                    )
-                    t_trans_ms = (time.perf_counter() - t_trans_start) * 1000.0
-
-                    t_total_ms = (time.perf_counter() - t_process_start) * 1000.0
-                    print(f"  └─> [翻譯 ({target_lang})]: {translated_text}")
-
-                    is_fw = hasattr(self.asr, "active_precision")
-                    asr_tag = f"Whisper {self.asr.active_precision.upper()}" if is_fw else ("SenseVoice FP16" if getattr(self.asr, "is_fp16", False) else ("SenseVoice INT8" if "int8" in str(getattr(self.config.asr, "model_path", "")).lower() else "SenseVoice FP32"))
-                    diar_tag = "Nemotron FP16" if getattr(self.diarizer, "is_fp16", False) else ("Nemotron INT8" if "int8" in str(getattr(self.config.diarization, "model_path", "")).lower() else "Nemotron FP32")
-
-                    print(f"  ⚡ [延遲診斷] 音訊: {seg_dur:.2f}s | ASR辨識 ({asr_tag}): {t_asr_ms:.0f}ms | 語者分離 ({diar_tag}): {t_diar_ms:.0f}ms | LLM翻譯: {t_trans_ms:.0f}ms | 總處理耗時: {t_total_ms:.0f}ms")
-
-                    latency_dict = {
-                        "duration_s": round(seg_dur, 2),
-                        "asr_ms": round(t_asr_ms, 1),
-                        "diar_ms": round(t_diar_ms, 1),
-                        "trans_ms": round(t_trans_ms, 1),
-                        "total_ms": round(t_total_ms, 1),
+                    # Spawn concurrent translation task immediately
+                    item_data = {
+                        "seg_audio": seg_audio,
+                        "seg_dur": seg_dur,
+                        "speaker_label": speaker_label,
+                        "confidence": confidence,
+                        "orig_text": orig_text,
+                        "detected_lang": detected_lang,
+                        "t_asr_ms": t_asr_ms,
                     }
+                    task = asyncio.create_task(_translate_and_broadcast(item_data))
+                    translation_tasks.append(task)
 
-                    # 4. Construct Subtitle Event
-                    event = SubtitleEvent(
-                        id=str(uuid.uuid4())[:8],
-                        speaker=speaker_label,
-                        original_text=orig_text,
-                        translated_text=translated_text,
-                        source_lang=detected_lang,
-                        target_lang=target_lang,
-                        confidence=confidence,
-                        duration=round(seg_dur, 2),
-                        timestamp=timestamp,
-                        latency=latency_dict,
-                    )
-
-                    # 5. Broadcast to connected UI clients
-                    if self.on_subtitle_broadcast:
-                        try:
-                            if asyncio.iscoroutinefunction(self.on_subtitle_broadcast):
-                                await self.on_subtitle_broadcast(event)
-                            else:
-                                self.on_subtitle_broadcast(event)
-                        except Exception as e:
-                            print(f"[!] Error broadcasting subtitle event: {e}")
+                # Concurrently await all translations for the current utterance
+                if translation_tasks:
+                    try:
+                        await asyncio.gather(*translation_tasks, return_exceptions=True)
+                    except asyncio.CancelledError:
+                        for t in translation_tasks:
+                            if not t.done():
+                                t.cancel()
+                        raise
 
             except Exception as e:
                 print(f"[!] Error in pipeline processing: {e}")
@@ -363,7 +418,10 @@ class DiarizeFlowPipeline:
             self.asr = create_asr_engine(new_config.asr)
         else:
             self.asr.config = new_config.asr
-        self.translator.config = new_config.llm
+        if hasattr(self.translator, "update_config"):
+            self.translator.update_config(new_config.llm)
+        else:
+            self.translator.config = new_config.llm
         if hasattr(self, "segmenter"):
             self.segmenter.sad_threshold = getattr(new_config.diarization, "sad_threshold", 0.50)
             self.segmenter.silence_timeout_ms = new_config.vad.silence_timeout_ms
