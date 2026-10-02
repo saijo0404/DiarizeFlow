@@ -22,6 +22,32 @@ class LLMTranslator:
         self.config = config or LLMConfig()
         self._cache: Dict[str, str] = {}
         self._cache_max_size = 500
+        self._semaphore: Optional[asyncio.Semaphore] = None
+        self._semaphore_loop: Optional[asyncio.AbstractEventLoop] = None
+
+    def _get_semaphore(self) -> asyncio.Semaphore:
+        """Get or initialize the concurrency semaphore bound to the current running event loop."""
+        limit = getattr(self.config, "concurrency_limit", 3)
+        limit = max(1, int(limit))
+        try:
+            curr_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            curr_loop = None
+
+        if self._semaphore is None or self._semaphore_loop != curr_loop:
+            self._semaphore = asyncio.Semaphore(limit)
+            self._semaphore_loop = curr_loop
+        return self._semaphore
+
+    def update_config(self, config: LLMConfig):
+        """Update translator configuration and refresh semaphore if limit changed."""
+        old_limit = getattr(self.config, "concurrency_limit", 3)
+        self.config = config
+        new_limit = getattr(config, "concurrency_limit", 3)
+        if new_limit != old_limit:
+            self._semaphore = None
+            self._semaphore_loop = None
+
 
     def _clean_output(self, raw_text: str) -> str:
         """Strip reasoning blocks, quotes, and meta prefixes."""
@@ -101,25 +127,30 @@ class LLMTranslator:
         user_prompt = f"請將這段話直接翻譯成【{target_lang}】（只輸出譯文，勿加任何解釋）：\n{text}"
 
         translated = ""
-        try:
-            if provider in ["vllm", "llama.cpp", "openai", "ollama"]:
-                translated = await self._call_openai_compatible(sys_prompt, user_prompt, target_lang=target_lang)
-            elif provider in ["claude", "anthropic"]:
-                translated = await self._call_claude(sys_prompt, user_prompt)
-            else:
-                # Fallback to OpenAI compatible
-                translated = await self._call_openai_compatible(sys_prompt, user_prompt, target_lang=target_lang)
+        sem = self._get_semaphore()
+        async with sem:
+            if cache_key in self._cache:
+                return self._cache[cache_key]
 
-            if not translated:
-                translated = text  # fallback to original if API returned empty
-        except Exception as e:
-            print(f"[!] LLM Translation error ({provider}): {e}")
-            translated = text  # Graceful fallback to original text
+            try:
+                if provider in ["vllm", "llama.cpp", "openai", "ollama"]:
+                    translated = await self._call_openai_compatible(sys_prompt, user_prompt, target_lang=target_lang)
+                elif provider in ["claude", "anthropic"]:
+                    translated = await self._call_claude(sys_prompt, user_prompt)
+                else:
+                    # Fallback to OpenAI compatible
+                    translated = await self._call_openai_compatible(sys_prompt, user_prompt, target_lang=target_lang)
 
-        # Cache result
-        if len(self._cache) >= self._cache_max_size:
-            self._cache.clear()
-        self._cache[cache_key] = translated
+                if not translated:
+                    translated = text  # fallback to original if API returned empty
+            except Exception as e:
+                print(f"[!] LLM Translation error ({provider}): {e}")
+                translated = text  # Graceful fallback to original text
+
+            # Cache result
+            if len(self._cache) >= self._cache_max_size:
+                self._cache.clear()
+            self._cache[cache_key] = translated
 
         return translated
 

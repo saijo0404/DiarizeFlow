@@ -81,7 +81,7 @@ class TestAppConfigSerialization(unittest.TestCase):
         self.assertEqual(loaded.vad.post_pad_ms, 180)
 
     def test_default_config_json_contents(self):
-        """Verify config.json includes sad_threshold, pre_pad_ms, and post_pad_ms."""
+        """Verify config.json includes sad_threshold, pre_pad_ms, post_pad_ms, and concurrency_limit."""
         config_path = Path(__file__).resolve().parent.parent / "config.json"
         with open(config_path, "r", encoding="utf-8") as f:
             data = json.load(f)
@@ -91,8 +91,20 @@ class TestAppConfigSerialization(unittest.TestCase):
         self.assertEqual(data["vad"]["pre_pad_ms"], 150)
         self.assertIn("post_pad_ms", data.get("vad", {}))
         self.assertEqual(data["vad"]["post_pad_ms"], 150)
+        self.assertIn("concurrency_limit", data.get("llm", {}))
+        self.assertEqual(data["llm"]["concurrency_limit"], 3)
+
+    def test_llm_concurrency_limit_roundtrip(self):
+        """Verify concurrency_limit in LLMConfig is preserved in roundtrip."""
+        cfg = AppConfig()
+        self.assertEqual(cfg.llm.concurrency_limit, 3)
+        cfg.llm.concurrency_limit = 5
+        d = cfg.to_dict()
+        loaded = AppConfig.from_dict(d)
+        self.assertEqual(loaded.llm.concurrency_limit, 5)
 
 
 if __name__ == "__main__":
     unittest.main()
+
 

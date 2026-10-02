@@ -70,6 +70,7 @@ class LLMConfig:
     target_language: str = "繁體中文"  # "繁體中文", "English", "日本語", "한국어", "簡體中文"
     temperature: float = 0.1
     max_tokens: int = 512
+    concurrency_limit: int = 3  # 最大並行翻譯請求數 (防止本機 GPU / vLLM / llama.cpp 顯存過載)
     system_prompt: str = (
         "你是一位高水準的即時語音字幕翻譯專家。請將發話內容直接翻譯成【{target_language}】。\n"
         "重要規則：\n"
