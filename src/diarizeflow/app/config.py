@@ -91,7 +91,8 @@ class UIConfig:
     show_original: bool = True
     accent_color: str = "#38bdf8"
     window_width: int = 760
-    window_height: int = 180
+    window_height: int = 260
+    max_cards: int = 3  # 多卡片佇列上限 (預設 3 則發言)
 
 
 @dataclass

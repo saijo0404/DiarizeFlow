@@ -257,6 +257,14 @@ class SettingsDialog(QDialog):
         self.font_spin.setValue(self.config.ui.font_size)
         form.addRow("字幕字型大小:", self.font_spin)
 
+        # 7b. Max cards queue limit
+        self.max_cards_spin = QSpinBox()
+        self.max_cards_spin.setRange(1, 10)
+        self.max_cards_spin.setValue(getattr(self.config.ui, "max_cards", 3))
+        self.max_cards_spin.setSuffix(" 則對話卡片")
+        self.max_cards_spin.setToolTip("多卡片佇列上限：同時並存的講者發言卡片數量 (建議 2 ~ 4 則)")
+        form.addRow("多卡片佇列上限:", self.max_cards_spin)
+
         # 8. Speaker Separation Mode & Threshold
         self.streaming_mode_combo = QComboBox()
         self.streaming_mode_combo.addItem("Low Latency (官方預設 1.04s, 換句即分)", "low_latency")
@@ -452,6 +460,7 @@ class SettingsDialog(QDialog):
         self.config.llm.model_name = self.model_edit.text().strip()
         self.config.ui.fade_out_seconds = float(self.fade_spin.value())
         self.config.ui.font_size = int(self.font_spin.value())
+        self.config.ui.max_cards = int(self.max_cards_spin.value())
         self.config.ui.opacity = float(self.opacity_spin.value())
         self.config.ui.show_original = self.show_orig_check.isChecked()
         self.config.diarization.streaming_mode = self.streaming_mode_combo.currentData()
@@ -465,6 +474,158 @@ class SettingsDialog(QDialog):
         self.accept()
 
 
+class SubtitleCardWidget(QFrame):
+    """Individual subtitle card representing a single speaker utterance with an independent lifecycle."""
+
+    dismissed = Signal(object)  # Emits self when fade out finishes or dismissed
+
+    def __init__(
+        self,
+        speaker: str,
+        original: str,
+        translated: str,
+        confidence: float = 1.0,
+        config: Optional[AppConfig] = None,
+        parent: Optional[QWidget] = None,
+    ):
+        super().__init__(parent)
+        self.speaker = speaker
+        self.original = original
+        self.translated = translated
+        self.confidence = confidence
+        self.config = config or AppConfig()
+
+        self.setObjectName("SubtitleCardItem")
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
+
+        self._build_ui()
+        self._init_timer()
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(3)
+
+        # Header: Speaker Badge
+        header_layout = QHBoxLayout()
+        header_layout.setContentsMargins(0, 0, 0, 0)
+        header_layout.setSpacing(6)
+
+        color = get_speaker_color(self.speaker)
+        self.badge = QLabel(self.speaker)
+        self.badge.setObjectName("SpeakerBadge")
+        self.badge.setStyleSheet(f"""
+            QLabel#SpeakerBadge {{
+                background-color: {color}28;
+                color: {color};
+                border: 1px solid {color}88;
+                border-radius: 4px;
+                padding: 1px 7px;
+                font-size: 11px;
+                font-weight: 700;
+                min-height: 18px;
+                max-height: 18px;
+            }}
+        """)
+        header_layout.addWidget(self.badge)
+        header_layout.addStretch()
+        layout.addLayout(header_layout)
+
+        # Translated Text
+        self.translated_label = QLabel(self.translated)
+        self.translated_label.setWordWrap(True)
+        self.translated_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.translated_label.setStyleSheet(f"""
+            QLabel {{
+                color: #ffffff;
+                font-size: {self.config.ui.font_size}px;
+                font-weight: 700;
+                font-family: "Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", "Segoe UI", sans-serif;
+                background: transparent;
+                padding: 0px;
+            }}
+        """)
+        layout.addWidget(self.translated_label)
+
+        # Original Text
+        self.original_label = QLabel(self.original)
+        self.original_label.setWordWrap(True)
+        self.original_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.original_label.setStyleSheet("""
+            QLabel {
+                color: #94a3b8;
+                font-size: 12px;
+                font-style: italic;
+                font-family: "Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", "Segoe UI", sans-serif;
+                background: transparent;
+                padding: 0px;
+            }
+        """)
+        if self.config.ui.show_original and self.original:
+            self.original_label.show()
+        else:
+            self.original_label.hide()
+        layout.addWidget(self.original_label)
+
+        self._update_style()
+
+    def _update_style(self):
+        self.setStyleSheet("""
+            #SubtitleCardItem {
+                background-color: rgba(30, 41, 59, 0.45);
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 8px;
+            }
+        """)
+
+    def _init_timer(self):
+        self.fade_timer = QTimer(self)
+        self.fade_timer.setSingleShot(True)
+        self.fade_timer.timeout.connect(self.start_fade_out)
+        fade_ms = max(500, int(self.config.ui.fade_out_seconds * 1000))
+        self.fade_timer.start(fade_ms)
+
+        self.opacity_effect = QGraphicsOpacityEffect(self)
+        self.setGraphicsEffect(self.opacity_effect)
+        self.anim = QPropertyAnimation(self.opacity_effect, b"opacity")
+        self.anim.setDuration(350)
+        self.anim.setStartValue(1.0)
+        self.anim.setEndValue(0.0)
+        self.anim.setEasingCurve(QEasingCurve.Type.OutQuad)
+        self.anim.finished.connect(self._on_fade_finished)
+
+    def start_fade_out(self):
+        if self.anim.state() != QPropertyAnimation.State.Running:
+            self.anim.start()
+
+    def _on_fade_finished(self):
+        self.dismissed.emit(self)
+
+    def dismiss_immediately(self):
+        if self.fade_timer.isActive():
+            self.fade_timer.stop()
+        if self.anim.state() == QPropertyAnimation.State.Running:
+            self.anim.stop()
+        self.dismissed.emit(self)
+
+    def update_config(self, new_cfg: AppConfig):
+        self.config = new_cfg
+        self.translated_label.setStyleSheet(f"""
+            QLabel {{
+                color: #ffffff;
+                font-size: {self.config.ui.font_size}px;
+                font-weight: 700;
+                font-family: "Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", "Segoe UI", sans-serif;
+                background: transparent;
+                padding: 0px;
+            }}
+        """)
+        if self.config.ui.show_original and self.original:
+            self.original_label.show()
+        else:
+            self.original_label.hide()
+
+
 class TransparentSubtitleOverlay(QWidget):
     """Floating transparent HUD for live translated subtitles."""
 
@@ -473,10 +634,19 @@ class TransparentSubtitleOverlay(QWidget):
     audio_level_signal = Signal(float)
     subtitle_received_signal = Signal(object)
 
-    def __init__(self, config: Optional[AppConfig] = None, pipeline=None, parent=None):
+    def __init__(
+        self,
+        config: Optional[AppConfig] = None,
+        pipeline=None,
+        parent=None,
+        enable_network: bool = True,
+        auto_start_capture: bool = True,
+    ):
         super().__init__(parent)
         self.config = config or AppConfig()
         self.pipeline = pipeline
+        self.enable_network = enable_network
+        self.auto_start_capture = auto_start_capture
         if self.pipeline and not self.pipeline.is_running:
             print("[*] 正在啟動 DiarizeFlow Pipeline 背景處理核心...")
             self.pipeline.start()
@@ -498,6 +668,11 @@ class TransparentSubtitleOverlay(QWidget):
         self.drag_position = QPoint()
         self.is_dragging = False
         self.anchor_bottom_y: Optional[int] = None
+        self._cards: list[SubtitleCardWidget] = []
+        self._header_speaker_label = QLabel("講者 1")
+        self._header_speaker_label.hide()
+        self._legacy_original_label = QLabel("")
+        self._legacy_original_label.hide()
 
         # Audio capture stream
         self.audio_stream: Optional[AudioCaptureStream] = None
@@ -512,8 +687,9 @@ class TransparentSubtitleOverlay(QWidget):
         self._init_network()
         self._connect_signals()
 
-        # Position at bottom-center of primary screen with fixed stable bounds
-        self.setFixedSize(self.config.ui.window_width, self.config.ui.window_height)
+        # Position at bottom-center of primary screen with flexible stable bounds
+        self.setMinimumSize(480, 140)
+        self.resize(self.config.ui.window_width, self.config.ui.window_height)
         self._center_at_bottom()
 
         # Initial welcome display (customized for first-run calibration or normal launch)
@@ -535,7 +711,44 @@ class TransparentSubtitleOverlay(QWidget):
             )
 
         # Auto-start capture immediately so user doesn't have to search for the button
-        QTimer.singleShot(300, self._start_capture)
+        if self.auto_start_capture:
+            QTimer.singleShot(300, self._start_capture)
+
+    @property
+    def cards(self) -> list[SubtitleCardWidget]:
+        """Return list of active subtitle card widgets."""
+        return list(self._cards)
+
+    @property
+    def active_card_count(self) -> int:
+        """Return number of currently active cards in the queue."""
+        return len(self._cards)
+
+    @property
+    def max_cards(self) -> int:
+        """Return configured maximum number of cards."""
+        return getattr(self.config.ui, "max_cards", 3)
+
+    @property
+    def translated_text(self) -> QLabel:
+        """Return latest card's translated label, or idle label if no cards exist."""
+        if self._cards:
+            return self._cards[-1].translated_label
+        return self.idle_label
+
+    @property
+    def speaker_label(self) -> QLabel:
+        """Return latest card's speaker badge, or header speaker label if empty."""
+        if self._cards:
+            return self._cards[-1].badge
+        return self._header_speaker_label
+
+    @property
+    def original_text(self) -> QLabel:
+        """Return latest card's original label, or legacy label if empty."""
+        if self._cards:
+            return self._cards[-1].original_label
+        return self._legacy_original_label
 
     def _update_card_style(self):
         """Update card glassmorphism style based on configured opacity."""
@@ -578,10 +791,10 @@ class TransparentSubtitleOverlay(QWidget):
         self.app_title.setStyleSheet("color: #38bdf8; font-size: 12px; font-weight: 700; letter-spacing: 0.5px; padding: 2px 0;")
         header_layout.addWidget(self.app_title)
 
-        # Speaker Tag (hidden when idle)
-        self.speaker_label = QLabel("講者 1")
-        self.speaker_label.setObjectName("SpeakerLabel")
-        self.speaker_label.setStyleSheet("""
+        # Header Speaker Tag (hidden fallback)
+        self._header_speaker_label = QLabel("講者 1")
+        self._header_speaker_label.setObjectName("SpeakerLabel")
+        self._header_speaker_label.setStyleSheet("""
             #SpeakerLabel {
                 background-color: rgba(56, 189, 248, 0.20);
                 color: #38bdf8;
@@ -594,8 +807,8 @@ class TransparentSubtitleOverlay(QWidget):
                 max-height: 22px;
             }
         """)
-        self.speaker_label.hide()
-        header_layout.addWidget(self.speaker_label)
+        self._header_speaker_label.hide()
+        header_layout.addWidget(self._header_speaker_label)
 
         # Status / Dynamic Real-Time VU Meter Wave
         self.vu_indicator = QLabel("● 待機")
@@ -700,50 +913,28 @@ class TransparentSubtitleOverlay(QWidget):
 
         card_layout.addWidget(self.header_widget)
 
-        # 2. Subtitle Content Container (Fades out when inactive, leaving toolbar intact!)
+        # 2. Subtitle Content Container (Multi-Card Message Stack, Bottom-Anchored)
         self.subtitle_container = QWidget(self.card)
         self.subtitle_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
-        sub_layout = QVBoxLayout(self.subtitle_container)
-        sub_layout.setContentsMargins(0, 4, 0, 4)
-        sub_layout.setSpacing(6)
-        sub_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
+        self.cards_layout = QVBoxLayout(self.subtitle_container)
+        self.cards_layout.setContentsMargins(0, 4, 0, 4)
+        self.cards_layout.setSpacing(6)
+        self.cards_layout.setAlignment(Qt.AlignmentFlag.AlignBottom)
 
-        # Translated Text (Prominent, High Contrast PlainText)
-        self.translated_text = QLabel("")
-        self.translated_text.setWordWrap(True)
-        self.translated_text.setTextFormat(Qt.TextFormat.PlainText)
-        self.translated_text.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        self.translated_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.translated_text.setStyleSheet(f"""
-            QLabel {{
-                color: #ffffff;
-                font-size: {self.config.ui.font_size}px;
-                font-weight: 700;
-                font-family: "Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", "Segoe UI", sans-serif;
-                background: transparent;
-                padding: 2px 0px;
-            }}
-        """)
-        sub_layout.addWidget(self.translated_text)
-
-        # Original Text (Subtle, Muted PlainText)
-        self.original_text = QLabel("")
-        self.original_text.setWordWrap(True)
-        self.original_text.setTextFormat(Qt.TextFormat.PlainText)
-        self.original_text.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        self.original_text.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        self.original_text.setStyleSheet("""
+        # Idle placeholder label
+        self.idle_label = QLabel("● 待機中，等待說話聲音...")
+        self.idle_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignBottom)
+        self.idle_label.setStyleSheet("""
             QLabel {
-                color: #94a3b8;
+                color: #64748b;
                 font-size: 13px;
-                font-style: italic;
                 font-family: "Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", "Segoe UI", sans-serif;
                 background: transparent;
-                padding: 2px 0px;
+                padding: 4px 2px;
             }
         """)
-        self.original_text.setVisible(self.config.ui.show_original)
-        sub_layout.addWidget(self.original_text)
+        self.cards_layout.addWidget(self.idle_label)
+        self.idle_label.show()
 
         card_layout.addWidget(self.subtitle_container, 1)
         root_layout.addWidget(self.card)
@@ -759,6 +950,9 @@ class TransparentSubtitleOverlay(QWidget):
 
     def _init_network(self):
         """Initialize background network listeners or direct pipeline integration."""
+        if not getattr(self, "enable_network", True):
+            return
+
         if self.pipeline:
             # Direct in-process pipeline: connect callbacks directly without network overhead
             self.pipeline.on_subtitle(lambda evt: self.subtitle_received_signal.emit(evt))
@@ -905,84 +1099,77 @@ class TransparentSubtitleOverlay(QWidget):
     def _format_original_html(self, speaker: str, text: str) -> str:
         return self._format_original_text(speaker, text)
 
+    def _maintain_bottom_anchor(self):
+        """Keep the window bottom edge strictly fixed to anchor_bottom_y."""
+        if self.anchor_bottom_y is not None and not self.is_dragging:
+            expected_y = self.anchor_bottom_y - self.height()
+            if self.y() != expected_y:
+                self.move(self.x(), expected_y)
+
     def _update_window_height(self):
-        """Keep stable window height to completely prevent window jumping and bouncing."""
-        pass
+        """Keep stable window height and maintain bottom-anchoring to prevent window jumping."""
+        self._maintain_bottom_anchor()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._maintain_bottom_anchor()
 
     def show_subtitle(self, speaker: str, original: str, translated: str, confidence: float = 1.0):
-        """Display translated subtitle immediately with high-contrast PlainText formatting."""
-        # Update Speaker Badge
-        color = get_speaker_color(speaker)
-        self.speaker_label.setText(speaker)
-        self.speaker_label.setStyleSheet(f"""
-            #SpeakerLabel {{
-                background-color: {color}33;
-                color: {color};
-                border: 1px solid {color}88;
-                border-radius: 6px;
-                padding: 2px 8px;
-                font-size: 11px;
-                font-weight: 700;
-                min-height: 22px;
-                max-height: 22px;
-            }}
-        """)
-        self.speaker_label.show()
+        """Display translated subtitle in the bottom-anchored multi-card queue."""
+        self.idle_label.hide()
 
-        # Update cached texts
         self._current_speaker = speaker
         self._current_translated_text = translated
         self._current_original_text = original
 
-        # Update Texts with high contrast PlainText
-        self.translated_text.setStyleSheet(f"""
-            QLabel {{
-                color: #ffffff;
-                font-size: {self.config.ui.font_size}px;
-                font-weight: 700;
-                font-family: "Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", "Segoe UI", sans-serif;
-                background: transparent;
-                padding: 2px 0px;
-            }}
-        """)
-        self.translated_text.setText(self._format_translated_text(speaker, translated))
-        self.translated_text.show()
+        card = SubtitleCardWidget(
+            speaker=speaker,
+            original=original,
+            translated=translated,
+            confidence=confidence,
+            config=self.config,
+            parent=self.subtitle_container,
+        )
+        card.dismissed.connect(self._on_card_dismissed)
 
-        if self.config.ui.show_original and original:
-            self.original_text.setText(self._format_original_text(speaker, original))
-            self.original_text.show()
-        else:
-            self.original_text.setText("")
-            self.original_text.hide()
+        self._cards.append(card)
+        self.cards_layout.addWidget(card)
+        card.show()
+
+        # Enforce max_cards queue cap
+        max_cards = getattr(self.config.ui, "max_cards", 3)
+        while len(self._cards) > max_cards:
+            oldest = self._cards.pop(0)
+            oldest.dismiss_immediately()
 
         self.subtitle_container.show()
+        self._maintain_bottom_anchor()
         self.card.update()
         self.update()
 
-        # Reset auto-dismiss timer so results do NOT linger on screen
-        fade_ms = int(self.config.ui.fade_out_seconds * 1000)
-        self.fade_timer.start(fade_ms)
+    def _on_card_dismissed(self, card: SubtitleCardWidget):
+        """Handle individual card dismissal upon timeout or manual ejection."""
+        if card in self._cards:
+            self._cards.remove(card)
+        self.cards_layout.removeWidget(card)
+        card.deleteLater()
+
+        if not self._cards:
+            self.idle_label.show()
+
+        self._maintain_bottom_anchor()
+        self.card.update()
+        self.update()
 
     def _start_fade_out(self):
-        """Cleanly clear subtitle text on dismiss timeout without hiding container."""
+        """Dismiss all active cards and display the idle placeholder."""
         self._current_translated_text = ""
         self._current_original_text = ""
-        self.translated_text.setStyleSheet("""
-            QLabel {
-                color: #64748b;
-                font-size: 13px;
-                font-family: "Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", "Segoe UI", sans-serif;
-                background: transparent;
-                padding: 2px 0px;
-            }
-        """)
-        self.translated_text.setText("● 待機中，等待說話聲音...")
-        self.original_text.setText("")
-        self.original_text.hide()
-        self.speaker_label.hide()
+        for card in list(self._cards):
+            card.dismiss_immediately()
+        self._cards.clear()
+        self.idle_label.show()
+        self._maintain_bottom_anchor()
         self.card.update()
         self.update()
 
@@ -1117,25 +1304,20 @@ class TransparentSubtitleOverlay(QWidget):
         self.config = new_cfg
         if self.pipeline:
             self.pipeline.update_config(new_cfg)
-        self.translated_text.setStyleSheet(f"""
-            QLabel {{
-                color: #ffffff;
-                font-size: {self.config.ui.font_size}px;
-                font-weight: 700;
-                font-family: "Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", "Segoe UI", sans-serif;
-                background: transparent;
-                padding: 2px 0px;
-            }}
-        """)
-        if self._current_translated_text:
-            self.translated_text.setText(self._format_translated_text(self._current_speaker, self._current_translated_text))
-        if self._current_original_text and self.config.ui.show_original:
-            self.original_text.setText(self._format_original_text(self._current_speaker, self._current_original_text))
-            self.original_text.show()
-        else:
-            self.original_text.hide()
+
+        for card in list(self._cards):
+            card.update_config(new_cfg)
+
+        max_cards = getattr(self.config.ui, "max_cards", 3)
+        while len(self._cards) > max_cards:
+            oldest = self._cards.pop(0)
+            oldest.dismiss_immediately()
+
         self._update_card_style()
-        self._update_window_height()
+        if self.width() != new_cfg.ui.window_width or self.height() != new_cfg.ui.window_height:
+            self.resize(new_cfg.ui.window_width, new_cfg.ui.window_height)
+        self._maintain_bottom_anchor()
+
         # Restart capture if running
         if self.is_capturing:
             self._stop_capture()
@@ -1166,15 +1348,16 @@ class TransparentSubtitleOverlay(QWidget):
             except Exception:
                 pass
         event.accept()
-        app = QApplication.instance()
-        if app:
-            app.quit()
-        import os
-        import threading
-        def _force_exit():
-            time.sleep(0.15)
-            os._exit(0)
-        threading.Thread(target=_force_exit, daemon=True).start()
+        if getattr(self, "_exit_on_close", False):
+            app = QApplication.instance()
+            if app:
+                app.quit()
+            import os
+            import threading
+            def _force_exit():
+                time.sleep(0.15)
+                os._exit(0)
+            threading.Thread(target=_force_exit, daemon=True).start()
 
 
 def run_overlay_app(config: Optional[AppConfig] = None, pipeline=None) -> int:
@@ -1190,6 +1373,7 @@ def run_overlay_app(config: Optional[AppConfig] = None, pipeline=None) -> int:
     sig_timer.start(250)
 
     overlay = TransparentSubtitleOverlay(config, pipeline=pipeline)
+    overlay._exit_on_close = True
     overlay.show()
     return app.exec()
 
