@@ -45,6 +45,10 @@ class DiarizationConfig:
     speaker_threshold: float = 0.82
     sad_threshold: float = 0.50  # Sortformer Frame-level SAD 多軌語音活動門檻 (官方建議 0.50)
     max_speakers: int = 8
+    profiles_path: str = "data/speakers/profiles.json"
+    anti_drift_min_duration: float = 1.5
+    anti_drift_min_similarity: float = 0.86
+    anti_drift_alpha: float = 0.05
 
 
 @dataclass
@@ -114,6 +118,14 @@ def get_config_path(filename: str = "config.json") -> Path:
         return project_root / filename
     except Exception:
         return Path(filename).resolve()
+
+
+def get_data_path(rel_or_abs_path: str | Path) -> Path:
+    """Return persistent, writable path for application data files (e.g. speaker profiles)."""
+    p = Path(rel_or_abs_path)
+    if p.is_absolute():
+        return p
+    return get_config_path(str(rel_or_abs_path))
 
 
 def resolve_app_path(path_str: str | Path) -> Path:

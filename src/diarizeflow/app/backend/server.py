@@ -162,6 +162,67 @@ def create_app(config: AppConfig, pipeline: DiarizeFlowPipeline) -> FastAPI:
 
         return {"status": "enqueued", "filename": filename, "duration": round(duration, 2)}
 
+    # --- Speaker Voiceprint Profiles Endpoints ---
+
+    @app.get("/api/speakers")
+    async def get_speakers():
+        """Get all saved persistent speaker voiceprint profiles."""
+        profiles = pipeline.get_speaker_profiles()
+        return {"profiles": profiles, "count": len(profiles)}
+
+    @app.post("/api/speakers/{speaker_id}/rename")
+    async def rename_speaker(speaker_id: str, payload: dict):
+        """Rename a speaker and pin their profile to disk."""
+        new_name = payload.get("name") or payload.get("new_name")
+        if not new_name or not str(new_name).strip():
+            return JSONResponse(status_code=400, content={"detail": "Missing 'name' in request body"})
+        new_name = str(new_name).strip()
+        color = payload.get("color")
+
+        success = pipeline.rename_speaker(speaker_id, new_name, color)
+        if not success:
+            return JSONResponse(status_code=404, content={"detail": f"Speaker '{speaker_id}' not found"})
+
+        profiles = pipeline.get_speaker_profiles()
+        updated = next((p for p in profiles if p["id"] == speaker_id or p["name"] == new_name), None)
+
+        # Broadcast update to connected subtitle clients
+        closed_clients = set()
+        for client in active_subtitle_clients:
+            try:
+                await client.send_json({
+                    "type": "speaker_renamed",
+                    "old_speaker": speaker_id,
+                    "new_speaker": new_name,
+                    "color": color,
+                })
+            except Exception:
+                closed_clients.add(client)
+        active_subtitle_clients.difference_update(closed_clients)
+
+        return {"status": "success", "profile": updated}
+
+    @app.delete("/api/speakers/{speaker_id}")
+    async def delete_speaker(speaker_id: str):
+        """Delete a speaker profile permanently from disk and cache."""
+        success = pipeline.delete_speaker(speaker_id)
+        if not success:
+            return JSONResponse(status_code=404, content={"detail": f"Speaker '{speaker_id}' not found"})
+
+        # Broadcast deletion to connected subtitle clients
+        closed_clients = set()
+        for client in active_subtitle_clients:
+            try:
+                await client.send_json({
+                    "type": "speaker_deleted",
+                    "speaker_id": speaker_id,
+                })
+            except Exception:
+                closed_clients.add(client)
+        active_subtitle_clients.difference_update(closed_clients)
+
+        return {"status": "deleted", "speaker_id": speaker_id}
+
     # --- Root API Status ---
     @app.get("/")
     async def root():

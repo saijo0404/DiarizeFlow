@@ -58,6 +58,7 @@ from PySide6.QtWidgets import (
     QGraphicsDropShadowEffect,
     QGraphicsOpacityEffect,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QLineEdit,
     QMessageBox,
@@ -474,10 +475,36 @@ class SettingsDialog(QDialog):
         self.accept()
 
 
+class SpeakerBadge(QLabel):
+    """Interactive speaker badge that triggers rename on click or double-click."""
+
+    clicked = Signal()
+
+    def __init__(self, text: str = "", parent: Optional[QWidget] = None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setToolTip("點擊以自訂講者名稱並釘選聲紋")
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def mouseDoubleClickEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.clicked.emit()
+            event.accept()
+        else:
+            super().mouseDoubleClickEvent(event)
+
+
 class SubtitleCardWidget(QFrame):
     """Individual subtitle card representing a single speaker utterance with an independent lifecycle."""
 
     dismissed = Signal(object)  # Emits self when fade out finishes or dismissed
+    rename_requested = Signal(str)  # Emits current speaker name on badge click
 
     def __init__(
         self,
@@ -506,13 +533,13 @@ class SubtitleCardWidget(QFrame):
         layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(3)
 
-        # Header: Speaker Badge
+        # Header: Interactive Speaker Badge
         header_layout = QHBoxLayout()
         header_layout.setContentsMargins(0, 0, 0, 0)
         header_layout.setSpacing(6)
 
         color = get_speaker_color(self.speaker)
-        self.badge = QLabel(self.speaker)
+        self.badge = SpeakerBadge(self.speaker)
         self.badge.setObjectName("SpeakerBadge")
         self.badge.setStyleSheet(f"""
             QLabel#SpeakerBadge {{
@@ -527,6 +554,7 @@ class SubtitleCardWidget(QFrame):
                 max-height: 18px;
             }}
         """)
+        self.badge.clicked.connect(self._on_badge_clicked)
         header_layout.addWidget(self.badge)
         header_layout.addStretch()
         layout.addLayout(header_layout)
@@ -624,6 +652,29 @@ class SubtitleCardWidget(QFrame):
             self.original_label.show()
         else:
             self.original_label.hide()
+
+    def _on_badge_clicked(self):
+        self.rename_requested.emit(self.speaker)
+
+    def update_speaker(self, new_speaker: str, color: Optional[str] = None):
+        """Dynamically update card speaker label and badge styling."""
+        self.speaker = new_speaker
+        if color is None:
+            color = get_speaker_color(new_speaker)
+        self.badge.setText(new_speaker)
+        self.badge.setStyleSheet(f"""
+            QLabel#SpeakerBadge {{
+                background-color: {color}28;
+                color: {color};
+                border: 1px solid {color}88;
+                border-radius: 4px;
+                padding: 1px 7px;
+                font-size: 11px;
+                font-weight: 700;
+                min-height: 18px;
+                max-height: 18px;
+            }}
+        """)
 
 
 class TransparentSubtitleOverlay(QWidget):
@@ -1056,6 +1107,20 @@ class TransparentSubtitleOverlay(QWidget):
         elif not isinstance(event, dict):
             return
 
+        if event.get("type") == "speaker_renamed":
+            old_spk = event.get("old_speaker")
+            new_spk = event.get("new_speaker")
+            col = event.get("color")
+            if old_spk and new_spk:
+                for c in self._cards:
+                    if c.speaker == old_spk:
+                        c.update_speaker(new_spk, col)
+                if self._current_speaker == old_spk:
+                    self._current_speaker = new_spk
+                if self._header_speaker_label.text() == old_spk:
+                    self._header_speaker_label.setText(new_spk)
+            return
+
         speaker = event.get("speaker", "講者 1")
         orig = event.get("original_text", "")
         trans = event.get("translated_text", "")
@@ -1131,6 +1196,7 @@ class TransparentSubtitleOverlay(QWidget):
             parent=self.subtitle_container,
         )
         card.dismissed.connect(self._on_card_dismissed)
+        card.rename_requested.connect(self._on_rename_requested)
 
         self._cards.append(card)
         self.cards_layout.addWidget(card)
@@ -1160,6 +1226,62 @@ class TransparentSubtitleOverlay(QWidget):
         self._maintain_bottom_anchor()
         self.card.update()
         self.update()
+
+    def _on_rename_requested(self, speaker: str):
+        """Prompt user with dialog to rename speaker and pin their voiceprint profile."""
+        new_name, ok = QInputDialog.getText(
+            self,
+            "自訂講者名稱與聲紋釘選",
+            f"將講者「{speaker}」重新命名為:",
+            QLineEdit.EchoMode.Normal,
+            speaker,
+        )
+        if ok and new_name and new_name.strip() and new_name.strip() != speaker:
+            self.rename_speaker(speaker, new_name.strip())
+
+    def rename_speaker(self, old_name: str, new_name: str, color: Optional[str] = None):
+        """Rename speaker across active HUD cards, pipeline diarizer, and persistent storage."""
+        # 1. Update all currently visible subtitle cards
+        for card in self._cards:
+            if card.speaker == old_name:
+                card.update_speaker(new_name, color)
+
+        # 2. Update current speaker tracking
+        if self._current_speaker == old_name:
+            self._current_speaker = new_name
+        if self._header_speaker_label.text() == old_name:
+            self._header_speaker_label.setText(new_name)
+
+        # 3. Update pipeline diarizer if running in-process
+        if self.pipeline and hasattr(self.pipeline, "rename_speaker"):
+            self.pipeline.rename_speaker(old_name, new_name, color)
+        elif getattr(self, "enable_network", True):
+            # Remote background sync via REST API
+            threading.Thread(
+                target=self._send_rename_api,
+                args=(old_name, new_name, color),
+                daemon=True,
+            ).start()
+
+        print(f"[*] [HUD] 講者「{old_name}」已重新命名為「{new_name}」並已釘選至永久聲紋資料庫")
+
+    def _send_rename_api(self, old_name: str, new_name: str, color: Optional[str] = None):
+        try:
+            import urllib.request
+            import urllib.parse
+            port = self.config.server.port
+            url = f"http://127.0.0.1:{port}/api/speakers/{urllib.parse.quote(old_name)}/rename"
+            payload = json.dumps({"name": new_name, "color": color}).encode("utf-8")
+            req = urllib.request.Request(
+                url,
+                data=payload,
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=2.0):
+                pass
+        except Exception as e:
+            print(f"[!] 無法透過 REST API 同步講者重命名: {e}")
 
     def _start_fade_out(self):
         """Dismiss all active cards and display the idle placeholder."""

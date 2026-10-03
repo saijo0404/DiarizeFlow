@@ -435,3 +435,21 @@ class DiarizeFlowPipeline:
             self.stream_agc.max_gain = getattr(new_config.audio, "agc_max_gain", 25.0)
             self.stream_agc.min_gain = getattr(new_config.audio, "agc_min_gain", 0.15)
         print("[✓] Pipeline configuration updated.")
+
+    def rename_speaker(self, old_name_or_id: str, new_name: str, color: Optional[str] = None) -> bool:
+        """Rename a speaker, pin their voiceprint profile, and persist to disk."""
+        if self.diarizer is not None and hasattr(self.diarizer, "rename_speaker"):
+            return self.diarizer.rename_speaker(old_name_or_id, new_name, color)
+        return False
+
+    def delete_speaker(self, speaker_id_or_name: str) -> bool:
+        """Delete a speaker profile from disk and in-memory cache."""
+        if self.diarizer is not None and hasattr(self.diarizer, "delete_speaker"):
+            return self.diarizer.delete_speaker(speaker_id_or_name)
+        return False
+
+    def get_speaker_profiles(self) -> List[dict]:
+        """Retrieve all persistent speaker voiceprint profiles."""
+        if self.diarizer is not None and hasattr(self.diarizer, "get_speaker_profiles"):
+            return self.diarizer.get_speaker_profiles()
+        return []

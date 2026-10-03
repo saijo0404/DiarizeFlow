@@ -29,7 +29,11 @@
     "streaming_mode": "low_latency",
     "speaker_threshold": 0.82,
     "sad_threshold": 0.50,
-    "max_speakers": 8
+    "max_speakers": 8,
+    "profiles_path": "data/speakers/profiles.json",
+    "anti_drift_min_duration": 1.5,
+    "anti_drift_min_similarity": 0.86,
+    "anti_drift_alpha": 0.05
   },
   "asr": {
     "engine": "sensevoice",

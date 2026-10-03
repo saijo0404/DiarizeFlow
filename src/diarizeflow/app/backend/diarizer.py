@@ -8,13 +8,17 @@ Implements NVIDIA's official Low-Latency Streaming Diarization specification:
 """
 
 from pathlib import Path
+import re
 import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
+import uuid
 import librosa
 import numpy as np
 import onnxruntime as ort
 
 from diarizeflow.app.config import DiarizationConfig, resolve_app_path
+from diarizeflow.app.backend.voiceprint import SpeakerProfile, VoiceprintDatabase
 
 
 
@@ -89,6 +93,12 @@ class NemotronDiarizer:
         self._target_mel_bins = 128
         self._mel_basis: Optional[np.ndarray] = None
         self.known_speakers: List[Dict[str, Any]] = []
+        self.temporary_speakers: List[SpeakerProfile] = []
+        profiles_path = getattr(self.config, "profiles_path", "data/speakers/profiles.json")
+        self.voiceprint_db = VoiceprintDatabase(
+            storage_path=profiles_path,
+            model_type="nemotron_512d",
+        )
         self.similarity_threshold: float = getattr(self.config, "speaker_threshold", 0.82)
         if self.similarity_threshold < 0.5:
             self.similarity_threshold = 0.82
@@ -100,8 +110,33 @@ class NemotronDiarizer:
         self.fifo_dim: int = self.active_profile["fifo_len"]
 
         self._lock = threading.RLock()
+        self._sync_known_speakers()
         self._load_model()
         self._init_streaming_state()
+
+    def _sync_known_speakers(self):
+        """Synchronize self.known_speakers list with pinned persistent profiles and active temporary speakers."""
+        with self._lock:
+            synced = []
+            for p in self.voiceprint_db.get_pinned_profiles():
+                synced.append({
+                    "id": p.id,
+                    "name": p.name,
+                    "emb": p.anchor_emb,
+                    "count": p.sample_count,
+                    "is_pinned": True,
+                    "profile": p,
+                })
+            for p in self.temporary_speakers:
+                synced.append({
+                    "id": p.id,
+                    "name": p.name,
+                    "emb": p.anchor_emb,
+                    "count": p.sample_count,
+                    "is_pinned": False,
+                    "profile": p,
+                })
+            self.known_speakers = synced
 
     def _create_temp_cache(self, clone: bool = True) -> Dict[str, np.ndarray]:
         """Create an isolated temporary cache dictionary for non-streaming inferences."""
@@ -150,6 +185,11 @@ class NemotronDiarizer:
             new_thresh = getattr(config, "speaker_threshold", 0.82)
             self.similarity_threshold = new_thresh if new_thresh >= 0.5 else 0.82
 
+            new_profiles_path = getattr(config, "profiles_path", "data/speakers/profiles.json")
+            if str(self.voiceprint_db.storage_path) != str(new_profiles_path):
+                self.voiceprint_db = VoiceprintDatabase(storage_path=new_profiles_path)
+                self._sync_known_speakers()
+
             new_mode = getattr(config, "streaming_mode", "low_latency")
             if new_mode != self.streaming_mode and new_mode in NEMOTRON_STREAMING_PROFILES:
                 self.streaming_mode = new_mode
@@ -160,11 +200,13 @@ class NemotronDiarizer:
                 print(f"[*] 語者分離門檻更新為: {self.similarity_threshold:.2f}")
 
     def reset(self):
-        """Reset speaker memory profiles and Sortformer streaming cache."""
+        """Reset speaker memory profiles and Sortformer streaming cache, reloading persistent profiles."""
         with self._lock:
-            self.known_speakers.clear()
+            self.temporary_speakers.clear()
+            self.voiceprint_db.load_profiles()
+            self._sync_known_speakers()
             self._init_streaming_state()
-            print("[*] Speaker diarization memory and Sortformer streaming cache reset.")
+            print("[*] Speaker diarization memory and Sortformer streaming cache reset (persistent profiles reloaded).")
 
 
     def _load_model(self):
@@ -495,7 +537,16 @@ class NemotronDiarizer:
             e.g. ("講者 1", 0.92, [0.88, 0.05, 0.02, ...])
         """
         if len(audio) < 1600:
-            return "講者 1", 1.0, [1.0] + [0.0] * 7
+            with self._lock:
+                default_spk = "講者 1"
+                pinned = self.voiceprint_db.get_pinned_profiles()
+                if pinned:
+                    default_spk = pinned[0].name
+                elif self.temporary_speakers:
+                    default_spk = self.temporary_speakers[0].name
+            return default_spk, 1.0, [1.0] + [0.0] * 7
+
+        duration_s = float(len(audio) / sample_rate)
 
         # 1. Native Nemotron Sortformer Diarization with 512-d Deep Speaker Embeddings
         if self.session is not None:
@@ -504,9 +555,9 @@ class NemotronDiarizer:
                 if probs is not None and spk_vec is not None:
                     channel_scores = np.mean(probs, axis=0)
 
-                    # Match or register speaker with Nemotron deep embedding
+                    # Match or register speaker with Nemotron deep embedding & anti-drift
                     speaker_label, best_sim = self._match_or_register_speaker(
-                        spk_vec, f"Nemotron {self.active_profile['name']}"
+                        spk_vec, f"Nemotron {self.active_profile['name']}", duration_s=duration_s
                     )
 
                     spk_probs = [float(s) for s in channel_scores[:8]]
@@ -526,51 +577,193 @@ class NemotronDiarizer:
         # 2. Acoustic Voiceprint Fallback (Used only if ONNX model is missing or fails)
         try:
             emb = self._extract_voiceprint(audio, sample_rate)
-            speaker_label, best_sim = self._match_or_register_speaker(emb, "聲學聲紋分離")
+            speaker_label, best_sim = self._match_or_register_speaker(
+                emb, "聲學聲紋分離", duration_s=duration_s
+            )
             return speaker_label, best_sim, [best_sim] + [0.0] * 7
         except Exception as e:
             print(f"[!] Diarization inference failed: {e}")
             return "講者 1", 0.5, [0.5] + [0.0] * 7
 
     def _match_or_register_speaker(
-        self, spk_vec: np.ndarray, engine_tag: str = "Nemotron 語者分離"
+        self,
+        spk_vec: np.ndarray,
+        engine_tag: str = "Nemotron 語者分離",
+        duration_s: float = 0.0,
     ) -> Tuple[str, float]:
-        """Match speaker against known speaker database using cosine similarity, or register a new speaker."""
+        """Match speaker against persistent database and temporary speakers with anti-drift protection."""
         with self._lock:
-            if not self.known_speakers:
-                self.known_speakers.append({"id": 1, "emb": spk_vec, "count": 1})
-                speaker_label = "講者 1"
-                print(f"[+] [{engine_tag}] 註冊首位發話者: {speaker_label}")
-                return speaker_label, 1.0
+            # 1. Zero-Shot Bootstrapping: Match against Pinned Persistent Profiles
+            pinned_profiles = [
+                p for p in self.voiceprint_db.get_pinned_profiles()
+                if len(p.anchor_emb) == len(spk_vec)
+            ]
+            if pinned_profiles:
+                sims = [float(np.dot(spk_vec, p.anchor_emb)) for p in pinned_profiles]
+                best_idx = int(np.argmax(sims))
+                best_sim = sims[best_idx]
 
-            sims = [float(np.dot(spk_vec, spk["emb"])) for spk in self.known_speakers]
-            best_idx = int(np.argmax(sims))
-            best_sim = sims[best_idx]
+                if best_sim >= self.similarity_threshold:
+                    spk = pinned_profiles[best_idx]
+                    min_dur = getattr(self.config, "anti_drift_min_duration", 1.5)
+                    min_sim = getattr(self.config, "anti_drift_min_similarity", 0.86)
+                    alpha = getattr(self.config, "anti_drift_alpha", 0.05)
 
-            if best_sim >= self.similarity_threshold:
-                spk = self.known_speakers[best_idx]
-                spk["emb"] = 0.85 * spk["emb"] + 0.15 * spk_vec
-                spk_n = float(np.linalg.norm(spk["emb"]))
-                if spk_n > 1e-6:
-                    spk["emb"] /= spk_n
-                spk["count"] += 1
-                speaker_label = f"講者 {spk['id']}"
-                print(f"[*] [{engine_tag}] 判定為 {speaker_label} (聲線相似度: {best_sim:.3f})")
-                return speaker_label, best_sim
+                    if duration_s >= min_dur and best_sim >= min_sim:
+                        # Golden anchor assimilation with small alpha
+                        new_emb = (1.0 - alpha) * spk.anchor_emb + alpha * spk_vec
+                        norm = float(np.linalg.norm(new_emb))
+                        if norm > 1e-6:
+                            new_emb /= norm
+                        spk.anchor_emb = new_emb
+                        spk.sample_count += 1
+                        spk.last_seen_at = time.strftime("%Y-%m-%d %H:%M:%S")
+                        self.voiceprint_db.save_profiles()
+                        self._sync_known_speakers()
+                        print(
+                            f"[*] [{engine_tag}] 語者「{spk.name}」聲紋微調更新 "
+                            f"(相似度: {best_sim:.3f} >= {min_sim:.2f}, 長度: {duration_s:.2f}s >= {min_dur:.2f}s)"
+                        )
+                    else:
+                        # Anchor Protection: keep golden vector untouched
+                        spk.sample_count += 1
+                        spk.last_seen_at = time.strftime("%Y-%m-%d %H:%M:%S")
+                        self.voiceprint_db.save_profiles()
+                        self._sync_known_speakers()
+                        print(
+                            f"[*] [{engine_tag}] 判定為永久語者「{spk.name}」 "
+                            f"(相似度: {best_sim:.3f}, 錨點保護未漂移)"
+                        )
+                    return spk.name, best_sim
+
+            # 2. Match against Active Temporary Speakers
+            active_temp = [
+                p for p in self.temporary_speakers
+                if len(p.anchor_emb) == len(spk_vec)
+            ]
+            if active_temp:
+                sims = [float(np.dot(spk_vec, p.anchor_emb)) for p in active_temp]
+                best_idx = int(np.argmax(sims))
+                best_sim = sims[best_idx]
+
+                if best_sim >= self.similarity_threshold:
+                    spk = active_temp[best_idx]
+                    # Standard EMA for unpinned session speakers
+                    new_emb = 0.85 * spk.anchor_emb + 0.15 * spk_vec
+                    norm = float(np.linalg.norm(new_emb))
+                    if norm > 1e-6:
+                        new_emb /= norm
+                    spk.anchor_emb = new_emb
+                    spk.sample_count += 1
+                    spk.last_seen_at = time.strftime("%Y-%m-%d %H:%M:%S")
+                    self._sync_known_speakers()
+                    print(f"[*] [{engine_tag}] 判定為 {spk.name} (聲線相似度: {best_sim:.3f})")
+                    return spk.name, best_sim
+
+            # 3. New Speaker Registration or Capacity Fallback
+            total_count = len(pinned_profiles) + len(active_temp)
+            if total_count < self.config.max_speakers:
+                # Find next available label "講者 N"
+                used_nums = set()
+                for p in pinned_profiles + active_temp:
+                    m = re.match(r"^講者\s*(\d+)$", p.name.strip())
+                    if m:
+                        used_nums.add(int(m.group(1)))
+                next_num = 1
+                while next_num in used_nums:
+                    next_num += 1
+
+                label = f"講者 {next_num}"
+                new_spk = SpeakerProfile(
+                    id=f"spk_temp_{next_num}_{uuid.uuid4().hex[:6]}",
+                    name=label,
+                    is_pinned=False,
+                    sample_count=1,
+                    created_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                    anchor_emb=spk_vec.copy(),
+                    last_seen_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+                self.temporary_speakers.append(new_spk)
+                self._sync_known_speakers()
+                print(f"[+] [{engine_tag}] 檢測到新聲線！註冊為 {label}")
+                return label, 1.0
             else:
-                if len(self.known_speakers) < self.config.max_speakers:
-                    new_id = len(self.known_speakers) + 1
-                    self.known_speakers.append({"id": new_id, "emb": spk_vec, "count": 1})
-                    speaker_label = f"講者 {new_id}"
-                    print(
-                        f"[+] [{engine_tag}] 檢測到新聲線！註冊為 {speaker_label} "
-                        f"(最高相似度: {best_sim:.3f} < 門檻 {self.similarity_threshold:.2f})"
-                    )
-                    return speaker_label, best_sim
-                else:
-                    speaker_label = f"講者 {self.known_speakers[best_idx]['id']}"
-                    print(f"[*] [{engine_tag}] 達到講者上限，指派最接近的 {speaker_label} (相似度: {best_sim:.3f})")
-                    return speaker_label, best_sim
+                # Max speakers reached: assign the closest one among pinned and temporary
+                all_spks = pinned_profiles + active_temp
+                if all_spks:
+                    sims = [float(np.dot(spk_vec, p.anchor_emb)) for p in all_spks]
+                    best_idx = int(np.argmax(sims))
+                    spk = all_spks[best_idx]
+                    print(f"[*] [{engine_tag}] 達到講者上限，指派最接近的 {spk.name} (相似度: {sims[best_idx]:.3f})")
+                    return spk.name, sims[best_idx]
+                return "講者 1", 0.5
+
+    def rename_speaker(
+        self, old_name_or_id: str, new_name: str, color: Optional[str] = None
+    ) -> bool:
+        """Rename a speaker, pin their voiceprint profile, and persist to disk."""
+        with self._lock:
+            new_name = str(new_name).strip()
+            if not new_name:
+                return False
+
+            # Check if old_name_or_id exists in pinned profiles
+            prof = self.voiceprint_db.find_profile(old_name_or_id)
+            if prof is not None:
+                prof.name = new_name
+                if color:
+                    prof.color = color
+                prof.is_pinned = True
+                self.voiceprint_db.save_profiles()
+                self._sync_known_speakers()
+                print(f"[✓] 已更新永久講者「{old_name_or_id}」為「{new_name}」並保存至磁碟")
+                return True
+
+            # Check if old_name_or_id exists in temporary speakers
+            temp_idx = None
+            for idx, t in enumerate(self.temporary_speakers):
+                if t.id == old_name_or_id or t.name == old_name_or_id:
+                    temp_idx = idx
+                    break
+
+            if temp_idx is not None:
+                temp_spk = self.temporary_speakers.pop(temp_idx)
+                promoted = SpeakerProfile(
+                    id=temp_spk.id if not temp_spk.id.startswith("spk_temp_") else f"spk_{uuid.uuid4().hex[:8]}",
+                    name=new_name,
+                    color=color,
+                    is_pinned=True,
+                    sample_count=temp_spk.sample_count,
+                    created_at=temp_spk.created_at,
+                    anchor_emb=temp_spk.anchor_emb.copy(),
+                    last_seen_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+                )
+                self.voiceprint_db.add_or_update(promoted)
+                self.voiceprint_db.save_profiles()
+                self._sync_known_speakers()
+                print(f"[✓] 已將暫時講者「{old_name_or_id}」晉升為永久講者「{new_name}」並寫入磁碟")
+                return True
+
+            return False
+
+    def delete_speaker(self, speaker_id_or_name: str) -> bool:
+        """Delete a speaker profile from disk and in-memory cache."""
+        with self._lock:
+            deleted = self.voiceprint_db.delete(speaker_id_or_name)
+            prev_len = len(self.temporary_speakers)
+            self.temporary_speakers = [
+                t for t in self.temporary_speakers
+                if t.id != speaker_id_or_name and t.name != speaker_id_or_name
+            ]
+            if len(self.temporary_speakers) < prev_len:
+                deleted = True
+            self._sync_known_speakers()
+            return deleted
+
+    def get_speaker_profiles(self) -> List[Dict[str, Any]]:
+        """Return all saved persistent speaker profiles."""
+        with self._lock:
+            return [p.to_dict(include_embedding=True) for p in self.voiceprint_db.get_pinned_profiles()]
 
     def diarize_and_split(
         self, audio: np.ndarray, sample_rate: int = 16000

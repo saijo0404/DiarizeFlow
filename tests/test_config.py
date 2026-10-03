@@ -95,6 +95,8 @@ class TestAppConfigSerialization(unittest.TestCase):
         self.assertEqual(data["llm"]["concurrency_limit"], 3)
         self.assertIn("max_cards", data.get("ui", {}))
         self.assertEqual(data["ui"]["max_cards"], 3)
+        self.assertIn("profiles_path", data.get("diarization", {}))
+        self.assertEqual(data["diarization"]["profiles_path"], "data/speakers/profiles.json")
 
     def test_llm_concurrency_limit_roundtrip(self):
         """Verify concurrency_limit in LLMConfig is preserved in roundtrip."""
@@ -113,6 +115,26 @@ class TestAppConfigSerialization(unittest.TestCase):
         d = cfg.to_dict()
         loaded = AppConfig.from_dict(d)
         self.assertEqual(loaded.ui.max_cards, 5)
+
+    def test_voiceprint_config_roundtrip(self):
+        """Verify voiceprint and anti-drift configurations in DiarizationConfig are preserved in roundtrip."""
+        cfg = AppConfig()
+        self.assertEqual(cfg.diarization.profiles_path, "data/speakers/profiles.json")
+        self.assertEqual(cfg.diarization.anti_drift_min_duration, 1.5)
+        self.assertEqual(cfg.diarization.anti_drift_min_similarity, 0.86)
+        self.assertEqual(cfg.diarization.anti_drift_alpha, 0.05)
+
+        cfg.diarization.profiles_path = "custom/profiles.json"
+        cfg.diarization.anti_drift_min_duration = 2.0
+        cfg.diarization.anti_drift_min_similarity = 0.88
+        cfg.diarization.anti_drift_alpha = 0.08
+
+        d = cfg.to_dict()
+        loaded = AppConfig.from_dict(d)
+        self.assertEqual(loaded.diarization.profiles_path, "custom/profiles.json")
+        self.assertEqual(loaded.diarization.anti_drift_min_duration, 2.0)
+        self.assertEqual(loaded.diarization.anti_drift_min_similarity, 0.88)
+        self.assertEqual(loaded.diarization.anti_drift_alpha, 0.08)
 
 
 if __name__ == "__main__":
