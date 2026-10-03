@@ -1,11 +1,23 @@
 """Configuration models and loader for DiarizeFlow Real-time Translation App."""
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, field, asdict, fields
 import json
 import os
 from pathlib import Path
 import sys
 from typing import Optional, Dict, Any
+
+
+def filter_dataclass_kwargs(cls, d: Any) -> Dict[str, Any]:
+    """Filter dictionary items to only those matching valid fields of the target dataclass.
+
+    Prevents unexpected keyword argument errors during deserialization when configs contain
+    legacy keys, user typos, or experimental attributes.
+    """
+    if not isinstance(d, dict):
+        return {}
+    valid_fields = {f.name for f in fields(cls)}
+    return {k: v for k, v in d.items() if k in valid_fields}
 
 
 @dataclass
@@ -184,21 +196,34 @@ class AppConfig:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "AppConfig":
-        diar_dict = dict(data.get("diarization", {}))
-        if diar_dict.get("speaker_threshold", 0) < 0.5:
+        if not isinstance(data, dict):
+            return cls()
+
+        raw_diar = data.get("diarization")
+        diar_dict = dict(raw_diar) if isinstance(raw_diar, dict) else {}
+        try:
+            if float(diar_dict.get("speaker_threshold", 0.82)) < 0.5:
+                diar_dict["speaker_threshold"] = 0.82
+        except (TypeError, ValueError):
             diar_dict["speaker_threshold"] = 0.82
-        ui_dict = dict(data.get("ui", {}))
-        if ui_dict.get("opacity", 0.5) > 0.85:
+
+        raw_ui = data.get("ui")
+        ui_dict = dict(raw_ui) if isinstance(raw_ui, dict) else {}
+        try:
+            if float(ui_dict.get("opacity", 0.5)) > 0.85:
+                ui_dict["opacity"] = 0.50
+        except (TypeError, ValueError):
             ui_dict["opacity"] = 0.50
+
         return cls(
-            audio=AudioConfig(**data.get("audio", {})),
-            vad=VADConfig(**data.get("vad", {})),
-            diarization=DiarizationConfig(**diar_dict),
-            asr=ASRConfig(**data.get("asr", {})),
-            llm=LLMConfig(**data.get("llm", {})),
-            ui=UIConfig(**ui_dict),
-            server=ServerConfig(**data.get("server", {})),
-            hardware_calibrated=data.get("hardware_calibrated", False),
+            audio=AudioConfig(**filter_dataclass_kwargs(AudioConfig, data.get("audio", {}))),
+            vad=VADConfig(**filter_dataclass_kwargs(VADConfig, data.get("vad", {}))),
+            diarization=DiarizationConfig(**filter_dataclass_kwargs(DiarizationConfig, diar_dict)),
+            asr=ASRConfig(**filter_dataclass_kwargs(ASRConfig, data.get("asr", {}))),
+            llm=LLMConfig(**filter_dataclass_kwargs(LLMConfig, data.get("llm", {}))),
+            ui=UIConfig(**filter_dataclass_kwargs(UIConfig, ui_dict)),
+            server=ServerConfig(**filter_dataclass_kwargs(ServerConfig, data.get("server", {}))),
+            hardware_calibrated=bool(data.get("hardware_calibrated", False)),
         )
 
     def save(self, filepath: Optional[str] = None) -> None:
@@ -218,25 +243,40 @@ class AppConfig:
     @classmethod
     def load(cls, filepath: str = "config.json") -> "AppConfig":
         """Load configuration, prioritizing persistent user config next to executable."""
-        persistent_path = get_config_path(filepath)
-        if persistent_path.exists():
-            try:
-                with open(persistent_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                return cls.from_dict(data)
-            except Exception as e:
-                print(f"[!] Warning reading persistent config {persistent_path}: {e}")
+        import shutil
+        import time
 
-        path = resolve_app_path(filepath)
-        if path.exists():
+        candidate_paths = []
+        for get_path_fn in [get_config_path, resolve_app_path]:
             try:
-                with open(path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                return cls.from_dict(data)
-            except Exception as e:
-                print(f"[!] Warning reading bundled config {path}: {e}")
+                p = get_path_fn(filepath)
+                if p and p not in candidate_paths:
+                    candidate_paths.append(p)
+            except Exception:
+                pass
+
+        for path in candidate_paths:
+            if path.exists() and path.is_file():
+                try:
+                    with open(path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                    if isinstance(data, dict):
+                        return cls.from_dict(data)
+                    else:
+                        raise ValueError(f"Config root must be a JSON object, got {type(data).__name__}")
+                except Exception as e:
+                    backup_path = path.with_name(f"{path.stem}.corrupt_{int(time.time())}{path.suffix}")
+                    try:
+                        shutil.copy2(path, backup_path)
+                        print(f"[*] 已將損毀的配置檔備份至: {backup_path}")
+                    except Exception as copy_err:
+                        print(f"[!] 備份損毀配置檔失敗: {copy_err}")
+                    print(f"[!] 警告: 配置檔「{path}」格式損毀或語法錯誤: {e}，自動還原至預設配置。")
 
         default_config = cls()
-        default_config.save(filepath)
+        try:
+            default_config.save(filepath)
+        except Exception as save_err:
+            print(f"[!] 自動儲存預設配置檔注意: {save_err}")
         return default_config
 
