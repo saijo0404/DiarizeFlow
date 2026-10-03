@@ -10,6 +10,7 @@ Provides:
 """
 
 import asyncio
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Set
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
@@ -26,17 +27,6 @@ from diarizeflow.app.audio.devices import list_audio_devices
 
 
 def create_app(config: AppConfig, pipeline: DiarizeFlowPipeline) -> FastAPI:
-    app = FastAPI(title="DiarizeFlow Real-time Translation API", version="0.1.0")
-
-    # CORS
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-    )
-
     # Active subtitle WebSocket connections
     active_subtitle_clients: Set[WebSocket] = set()
 
@@ -53,19 +43,47 @@ def create_app(config: AppConfig, pipeline: DiarizeFlowPipeline) -> FastAPI:
 
     pipeline.on_subtitle_broadcast = broadcast_subtitle
 
-    @app.on_event("startup")
-    async def on_startup():
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        # Startup: initialize pipeline background worker if not already running
         if not pipeline.is_running:
-            pipeline.start(asyncio.get_event_loop())
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = asyncio.get_event_loop()
+            pipeline.start(loop)
+        yield
+        # Shutdown: close active WebSocket clients and release translator connection pool
+        for client in list(active_subtitle_clients):
+            try:
+                await client.close()
+            except Exception:
+                pass
+        active_subtitle_clients.clear()
 
-    @app.on_event("shutdown")
-    async def on_shutdown():
         # Do not forcefully kill pipeline if managed by desktop application
         if hasattr(pipeline.translator, "close"):
             try:
-                await pipeline.translator.close()
+                res = pipeline.translator.close()
+                if asyncio.iscoroutine(res) or hasattr(res, "__await__"):
+                    await res
             except Exception:
                 pass
+
+    app = FastAPI(
+        title="DiarizeFlow Real-time Translation API",
+        version="0.1.0",
+        lifespan=lifespan,
+    )
+
+    # CORS
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=["*"],
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
     # --- WebSocket Endpoints ---
 
