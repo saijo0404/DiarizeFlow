@@ -129,6 +129,18 @@ class DiarizeFlowPipeline:
             self._speech_queue.put_nowait(None)
         except Exception:
             pass
+        if hasattr(self.translator, "close"):
+            try:
+                if self._loop and self._loop.is_running():
+                    fut = asyncio.run_coroutine_threadsafe(self.translator.close(), self._loop)
+                    try:
+                        fut.result(timeout=0.5)
+                    except Exception:
+                        pass
+                elif hasattr(self.translator, "close_sync"):
+                    self.translator.close_sync()
+            except Exception:
+                pass
         if self._loop and self._loop.is_running():
             try:
                 self._loop.call_soon_threadsafe(self._loop.stop)

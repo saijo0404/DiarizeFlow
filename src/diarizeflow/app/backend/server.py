@@ -61,7 +61,11 @@ def create_app(config: AppConfig, pipeline: DiarizeFlowPipeline) -> FastAPI:
     @app.on_event("shutdown")
     async def on_shutdown():
         # Do not forcefully kill pipeline if managed by desktop application
-        pass
+        if hasattr(pipeline.translator, "close"):
+            try:
+                await pipeline.translator.close()
+            except Exception:
+                pass
 
     # --- WebSocket Endpoints ---
 
