@@ -12,7 +12,7 @@ Provides:
 import asyncio
 from pathlib import Path
 from typing import List, Set
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import numpy as np
@@ -120,13 +120,18 @@ def create_app(config: AppConfig, pipeline: DiarizeFlowPipeline) -> FastAPI:
 
     @app.get("/api/config")
     async def get_config():
-        return config.to_dict()
+        active_cfg = pipeline.config if pipeline and hasattr(pipeline, "config") else config
+        return active_cfg.to_dict()
 
     @app.post("/api/config")
     async def update_config(payload: dict):
-        new_cfg = AppConfig.from_dict(payload)
-        pipeline.update_config(new_cfg)
-        return {"status": "updated", "config": new_cfg.to_dict()}
+        try:
+            new_cfg = AppConfig.from_dict(payload)
+            if pipeline:
+                pipeline.update_config(new_cfg)
+            return {"status": "updated", "config": new_cfg.to_dict()}
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Invalid configuration payload: {e}")
 
     @app.get("/api/devices")
     async def get_devices():

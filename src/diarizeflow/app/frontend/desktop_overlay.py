@@ -703,6 +703,7 @@ class TransparentSubtitleOverlay(QWidget):
     audio_chunk_signal = Signal(bytes)
     audio_level_signal = Signal(float)
     subtitle_received_signal = Signal(object)
+    config_synced_signal = Signal(object)
 
     def __init__(
         self,
@@ -1209,7 +1210,9 @@ class TransparentSubtitleOverlay(QWidget):
 
     def _subtitles_worker(self):
         """Background worker listening for translated subtitle events."""
-        host = "127.0.0.1"
+        host = getattr(self.config.server, "host", "127.0.0.1")
+        if host == "0.0.0.0":
+            host = "127.0.0.1"
         port = self.config.server.port
         url = f"ws://{host}:{port}/ws/subtitles"
 
@@ -1217,6 +1220,8 @@ class TransparentSubtitleOverlay(QWidget):
             try:
                 with ws_connect(url, open_timeout=2.0) as ws:
                     self.connection_status_signal.emit("● 已連線", "#38bdf8")
+                    # Fetch and align remote backend configuration upon connection
+                    self._fetch_remote_backend_config()
                     while self.is_running:
                         try:
                             msg = ws.recv(timeout=1.0)
@@ -1232,7 +1237,9 @@ class TransparentSubtitleOverlay(QWidget):
 
     def _audio_worker(self):
         """Background worker streaming audio chunks to backend."""
-        host = "127.0.0.1"
+        host = getattr(self.config.server, "host", "127.0.0.1")
+        if host == "0.0.0.0":
+            host = "127.0.0.1"
         port = self.config.server.port
         url = f"ws://{host}:{port}/ws/audio"
 
@@ -1254,6 +1261,7 @@ class TransparentSubtitleOverlay(QWidget):
         self.audio_level_signal.connect(self._update_audio_level)
         self.subtitle_received_signal.connect(self._handle_subtitle_event)
         self.connection_status_signal.connect(self._update_status_indicator)
+        self.config_synced_signal.connect(self._on_remote_config_synced)
 
     @Slot(str, str)
     def _update_status_indicator(self, text: str, color: str):
@@ -1776,10 +1784,12 @@ class TransparentSubtitleOverlay(QWidget):
         dlg.settings_saved.connect(self._apply_updated_config)
         dlg.exec()
 
-    def _apply_updated_config(self, new_cfg: AppConfig):
+    def _apply_updated_config(self, new_cfg: AppConfig, sync_to_remote: bool = True):
         self.config = new_cfg
         if self.pipeline:
             self.pipeline.update_config(new_cfg)
+        elif sync_to_remote and getattr(self, "enable_network", True):
+            self._sync_config_to_remote_backend(new_cfg)
 
         for card in list(self._cards):
             card.update_config(new_cfg)
@@ -1798,6 +1808,63 @@ class TransparentSubtitleOverlay(QWidget):
         if self.is_capturing:
             self._stop_capture()
             self._start_capture()
+
+    def _sync_config_to_remote_backend(self, new_cfg: AppConfig):
+        """Asynchronously push updated configuration to remote backend via POST /api/config."""
+        def _send():
+            try:
+                import urllib.request
+                host = getattr(self.config.server, "host", "127.0.0.1")
+                if host == "0.0.0.0":
+                    host = "127.0.0.1"
+                port = getattr(self.config.server, "port", 8000)
+                url = f"http://{host}:{port}/api/config"
+                payload = json.dumps(new_cfg.to_dict()).encode("utf-8")
+                req = urllib.request.Request(
+                    url,
+                    data=payload,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
+                )
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    if resp.status == 200:
+                        print("[✓] 前端設定已成功同步至後端伺服器 (POST /api/config)")
+            except Exception as e:
+                print(f"[!] 同步設定至後端伺服器失敗: {e}")
+
+        t = threading.Thread(target=_send, daemon=True)
+        t.start()
+        return t
+
+    def _fetch_remote_backend_config(self):
+        """Fetch remote backend configuration via GET /api/config and align frontend state."""
+        def _fetch():
+            try:
+                import urllib.request
+                host = getattr(self.config.server, "host", "127.0.0.1")
+                if host == "0.0.0.0":
+                    host = "127.0.0.1"
+                port = getattr(self.config.server, "port", 8000)
+                url = f"http://{host}:{port}/api/config"
+                req = urllib.request.Request(url, method="GET")
+                with urllib.request.urlopen(req, timeout=3.0) as resp:
+                    if resp.status == 200:
+                        raw = resp.read().decode("utf-8")
+                        remote_dict = json.loads(raw)
+                        remote_cfg = AppConfig.from_dict(remote_dict)
+                        print("[✓] 成功從後端伺服器拉取最新配置並對齊前端 (GET /api/config)")
+                        self.config_synced_signal.emit(remote_cfg)
+            except Exception as e:
+                print(f"[!] 從後端拉取最新配置失敗: {e}")
+
+        t = threading.Thread(target=_fetch, daemon=True)
+        t.start()
+        return t
+
+    @Slot(object)
+    def _on_remote_config_synced(self, remote_cfg: AppConfig):
+        """Apply remote backend configuration without echoing back to backend."""
+        self._apply_updated_config(remote_cfg, sync_to_remote=False)
 
     # --- Mouse Drag Support for Floating HUD ---
     def mousePressEvent(self, event):
