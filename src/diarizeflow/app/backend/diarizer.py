@@ -108,6 +108,7 @@ class NemotronDiarizer:
             self.streaming_mode, NEMOTRON_STREAMING_PROFILES["low_latency"]
         )
         self.fifo_dim: int = self.active_profile["fifo_len"]
+        self.last_pre_encode_embs: Optional[np.ndarray] = None
 
         self._lock = threading.RLock()
         self._sync_known_speakers()
@@ -206,6 +207,7 @@ class NemotronDiarizer:
             self.voiceprint_db.load_profiles()
             self._sync_known_speakers()
             self._init_streaming_state()
+            self.last_pre_encode_embs = None
             print("[*] Speaker diarization memory and Sortformer streaming cache reset (persistent profiles reloaded).")
 
 
@@ -389,24 +391,69 @@ class NemotronDiarizer:
             return probs, pre_embs, valid_embs_len
 
     def forward_streaming_step(
-        self, audio: np.ndarray, sample_rate: int = 16000
-    ) -> Optional[np.ndarray]:
+        self,
+        audio: np.ndarray,
+        sample_rate: int = 16000,
+        return_embeddings: bool = False,
+    ) -> Any:
         """Execute a streaming forward step on audio window and return frame probabilities.
 
         Args:
             audio: 1D numpy array of 16kHz float32 audio.
             sample_rate: sampling rate (default: 16000).
+            return_embeddings: If True, returns tuple of (probs, step_emb).
 
         Returns:
             probs array of shape (valid_frames, 8) with posterior probabilities in [0.0, 1.0],
-            or None if inference is unavailable.
+            or (probs, step_emb) if return_embeddings is True,
+            or None / (None, None) if inference is unavailable.
         """
         if self.session is None or len(audio) < 1600:
-            return None
+            with self._lock:
+                self.last_pre_encode_embs = None
+            return (None, None) if return_embeddings else None
 
         mel = self._extract_mel(audio, sample_rate)
-        probs, _, _ = self._forward_chunk(mel, cache=None)
+        probs, pre_embs, valid_embs_len = self._forward_chunk(mel, cache=None)
+
+        step_emb = None
+        if pre_embs is not None and valid_embs_len > 0:
+            step_emb = np.mean(pre_embs[:valid_embs_len], axis=0).astype(np.float32)
+            norm = float(np.linalg.norm(step_emb))
+            if norm > 1e-6:
+                step_emb /= norm
+
+        with self._lock:
+            self.last_pre_encode_embs = step_emb
+
+        if return_embeddings:
+            return probs, step_emb
         return probs
+
+    def get_last_pre_encode_embs(self) -> Optional[np.ndarray]:
+        """Return the pre-encode speaker embedding vector from the most recent forward step."""
+        with self._lock:
+            if self.last_pre_encode_embs is not None:
+                return self.last_pre_encode_embs.copy()
+            return None
+
+    def identify_speaker_from_embedding(
+        self,
+        spk_vec: np.ndarray,
+        duration_s: float = 0.0,
+    ) -> Tuple[str, float]:
+        """Identify or register speaker directly from pre-computed 512-d embedding.
+
+        Bypasses redundant ONNX forward inference by reusing streaming pre-encode embeddings.
+        """
+        if spk_vec is None or len(spk_vec) == 0:
+            return "講者 1", 1.0
+
+        return self._match_or_register_speaker(
+            spk_vec,
+            f"Nemotron {self.active_profile['name']} (SAD Reuse)",
+            duration_s=duration_s,
+        )
 
     def _stream_process_audio(
         self,
@@ -786,7 +833,7 @@ class NemotronDiarizer:
             return [(audio, spk, conf)]
 
         try:
-            probs, _ = self._stream_process_audio(audio, sample_rate)
+            probs, spk_vec = self._stream_process_audio(audio, sample_rate)
             if probs is None or len(probs) < 5:
                 spk, conf, _ = self.identify_speaker(audio, sample_rate)
                 return [(audio, spk, conf)]
@@ -797,9 +844,14 @@ class NemotronDiarizer:
                 if np.sum(probs[:, ch] >= 0.40) >= 5:  # at least 200ms speech
                     active_channels.append(ch)
 
-            # If single active speaker detected, identify as single segment
+            # If single active speaker detected, identify as single segment directly from spk_vec
             if len(active_channels) <= 1:
-                spk, conf, _ = self.identify_speaker(audio, sample_rate)
+                if spk_vec is not None:
+                    spk, conf = self._match_or_register_speaker(
+                        spk_vec, f"Nemotron {self.active_profile['name']}", duration_s=len(audio) / sample_rate
+                    )
+                else:
+                    spk, conf, _ = self.identify_speaker(audio, sample_rate)
                 return [(audio, spk, conf)]
 
             # Multi-channel SAD: extract intervals for each active speaker
@@ -853,7 +905,12 @@ class NemotronDiarizer:
                     return [(seg[1], seg[2], seg[3]) for seg in extracted_segments]
 
             # Fallback to single primary speaker
-            spk, conf, _ = self.identify_speaker(audio, sample_rate)
+            if spk_vec is not None:
+                spk, conf = self._match_or_register_speaker(
+                    spk_vec, f"Nemotron {self.active_profile['name']}", duration_s=len(audio) / sample_rate
+                )
+            else:
+                spk, conf, _ = self.identify_speaker(audio, sample_rate)
             return [(audio, spk, conf)]
 
         except Exception as e:

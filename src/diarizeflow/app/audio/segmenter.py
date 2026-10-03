@@ -14,12 +14,13 @@ Maintains independent per-speaker audio buffers:
 """
 
 from collections import deque
+import inspect
 from typing import Any, Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 
 class SpeakerChannelBuffer:
-    """Manages audio accumulation and silence hang-over for a single speaker channel."""
+    """Manages audio accumulation, silence hang-over, and pre-encode embeddings for a speaker channel."""
 
     def __init__(self, channel_id: int):
         self.channel_id = channel_id
@@ -28,22 +29,33 @@ class SpeakerChannelBuffer:
         self.speech_samples: int = 0
         self.silence_samples: int = 0
         self.start_timestamp: float = 0.0
+        self.embeddings: List[np.ndarray] = []
 
-    def start_speech(self, pre_pad_chunks: List[np.ndarray], initial_chunk: Optional[np.ndarray] = None):
+    def start_speech(
+        self,
+        pre_pad_chunks: List[np.ndarray],
+        initial_chunk: Optional[np.ndarray] = None,
+        initial_embedding: Optional[np.ndarray] = None,
+    ):
         """Begin an utterance, initializing buffer with pre-pad context chunks."""
         self.chunks = list(pre_pad_chunks)
         self.speech_samples = sum(len(c) for c in self.chunks)
         self.silence_samples = 0
         self.in_speech = True
+        self.embeddings.clear()
         if initial_chunk is not None:
             self.chunks.append(initial_chunk)
             self.speech_samples += len(initial_chunk)
+        if initial_embedding is not None and isinstance(initial_embedding, np.ndarray):
+            self.embeddings.append(initial_embedding)
 
-    def add_speech_chunk(self, chunk: np.ndarray):
+    def add_speech_chunk(self, chunk: np.ndarray, embedding: Optional[np.ndarray] = None):
         """Append an active speech chunk and reset silence hangover counter."""
         self.chunks.append(chunk)
         self.speech_samples += len(chunk)
         self.silence_samples = 0
+        if embedding is not None and isinstance(embedding, np.ndarray):
+            self.embeddings.append(embedding)
 
     def add_silence_chunk(self, chunk: np.ndarray):
         """Append trailing audio during silence hangover (serves as post-padding)."""
@@ -57,12 +69,23 @@ class SpeakerChannelBuffer:
             return np.zeros(0, dtype=np.float32)
         return np.concatenate(self.chunks).astype(np.float32)
 
+    def get_utterance_embedding(self) -> Optional[np.ndarray]:
+        """Compute the mean normalized speaker embedding accumulated across this utterance."""
+        if not self.embeddings:
+            return None
+        mean_emb = np.mean(self.embeddings, axis=0).astype(np.float32)
+        norm = float(np.linalg.norm(mean_emb))
+        if norm > 1e-6:
+            mean_emb /= norm
+        return mean_emb
+
     def reset(self):
         """Reset buffer state for the next utterance."""
         self.chunks.clear()
         self.in_speech = False
         self.speech_samples = 0
         self.silence_samples = 0
+        self.embeddings.clear()
 
 
 class StreamingDiarizationSegmenter:
@@ -117,6 +140,16 @@ class StreamingDiarizationSegmenter:
         self.noise_floor: float = 0.002
         self.noise_alpha: float = 0.05
         self.energy_threshold: float = 0.008
+        self.last_emission_source: str = "neural_sad"
+
+    @property
+    def is_neural_sad_active(self) -> bool:
+        """Whether neural Sortformer SAD is currently loaded and available."""
+        return (
+            self.diarizer is not None
+            and getattr(self.diarizer, "session", None) is not None
+            and hasattr(self.diarizer, "forward_streaming_step")
+        )
 
     def process_chunk(
         self, chunk: np.ndarray, rms: Optional[float] = None
@@ -146,8 +179,10 @@ class StreamingDiarizationSegmenter:
         )
 
         if has_onnx:
+            self.last_emission_source = "neural_sad"
             completed_utterances = self._process_neural_sad(chunk, rms)
         else:
+            self.last_emission_source = "fallback_energy"
             completed_utterances = self._process_fallback_energy(chunk, rms)
 
         # Append to pre-pad ring buffer for future speech onset
@@ -155,9 +190,18 @@ class StreamingDiarizationSegmenter:
 
         # Trigger callback if registered
         if self.on_utterance:
+            is_neural = (self.last_emission_source == "neural_sad")
+            sig = inspect.signature(self.on_utterance)
+            accepts_5 = len(sig.parameters) >= 5 or any(
+                p.kind in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+                for p in sig.parameters.values()
+            ) or ("is_neural_sad" in sig.parameters)
             for seg_audio, spk, conf, dur in completed_utterances:
                 try:
-                    self.on_utterance(seg_audio, spk, conf, dur)
+                    if accepts_5:
+                        self.on_utterance(seg_audio, spk, conf, dur, is_neural)
+                    else:
+                        self.on_utterance(seg_audio, spk, conf, dur)
                 except Exception as e:
                     print(f"[!] Error in on_utterance callback: {e}")
 
@@ -178,7 +222,19 @@ class StreamingDiarizationSegmenter:
         window_audio = np.concatenate(self._audio_window).astype(np.float32)
 
         # Execute streaming forward step
-        probs = self.diarizer.forward_streaming_step(window_audio, self.sample_rate)
+        step_emb = None
+        probs = None
+        if hasattr(self.diarizer, "forward_streaming_step"):
+            res = self.diarizer.forward_streaming_step(window_audio, self.sample_rate)
+            if isinstance(res, tuple) and len(res) == 2:
+                probs, cand_emb = res
+                if isinstance(cand_emb, np.ndarray):
+                    step_emb = cand_emb
+            else:
+                probs = res
+                cand_emb = getattr(self.diarizer, "last_pre_encode_embs", None)
+                if isinstance(cand_emb, np.ndarray):
+                    step_emb = cand_emb
 
         # Dynamically track background noise floor to prevent false triggers on quiet hiss / ambient room noise
         any_in_speech = any(buf.in_speech for buf in self.channel_buffers.values())
@@ -226,20 +282,21 @@ class StreamingDiarizationSegmenter:
         for ch, buf in self.channel_buffers.items():
             if ch in active_channels:
                 if not buf.in_speech:
-                    buf.start_speech(list(self._pre_buffer), initial_chunk=chunk)
+                    buf.start_speech(list(self._pre_buffer), initial_chunk=chunk, initial_embedding=step_emb)
                 else:
-                    buf.add_speech_chunk(chunk)
+                    buf.add_speech_chunk(chunk, embedding=step_emb)
 
                 # Enforce max duration cutoff even during continuous speech
                 if buf.speech_samples >= self.max_speech_samples:
                     if buf.speech_samples >= self.min_speech_samples:
                         seg_audio = buf.get_utterance_audio()
-                        spk_label, conf = self._identify_speaker_segment(seg_audio, ch)
+                        mean_emb = buf.get_utterance_embedding()
+                        spk_label, conf = self._identify_speaker_segment(seg_audio, ch, embedding=mean_emb)
                         dur = round(len(seg_audio) / self.sample_rate, 2)
                         completed.append((seg_audio, spk_label, conf, dur))
                     buf.reset()
                     # Seamlessly continue speech accumulation for next chunk
-                    buf.start_speech([], initial_chunk=None)
+                    buf.start_speech([], initial_chunk=None, initial_embedding=step_emb)
             else:
                 if buf.in_speech:
                     buf.add_silence_chunk(chunk)
@@ -250,7 +307,8 @@ class StreamingDiarizationSegmenter:
                     if is_silence_timeout or is_max_duration:
                         if buf.speech_samples >= self.min_speech_samples:
                             seg_audio = buf.get_utterance_audio()
-                            spk_label, conf = self._identify_speaker_segment(seg_audio, ch)
+                            mean_emb = buf.get_utterance_embedding()
+                            spk_label, conf = self._identify_speaker_segment(seg_audio, ch, embedding=mean_emb)
                             dur = round(len(seg_audio) / self.sample_rate, 2)
                             completed.append((seg_audio, spk_label, conf, dur))
                         buf.reset()
@@ -293,7 +351,7 @@ class StreamingDiarizationSegmenter:
             if buf.speech_samples >= self.max_speech_samples:
                 if buf.speech_samples >= self.min_speech_samples:
                     seg_audio = buf.get_utterance_audio()
-                    spk_label, conf = self._identify_speaker_segment(seg_audio, 0)
+                    spk_label, conf = self._identify_speaker_segment(seg_audio, 0, embedding=None)
                     dur = round(len(seg_audio) / self.sample_rate, 2)
                     completed.append((seg_audio, spk_label, conf, dur))
                 buf.reset()
@@ -307,27 +365,55 @@ class StreamingDiarizationSegmenter:
                 if is_silence_timeout or is_max_duration:
                     if buf.speech_samples >= self.min_speech_samples:
                         seg_audio = buf.get_utterance_audio()
-                        spk_label, conf = self._identify_speaker_segment(seg_audio, 0)
+                        spk_label, conf = self._identify_speaker_segment(seg_audio, 0, embedding=None)
                         dur = round(len(seg_audio) / self.sample_rate, 2)
                         completed.append((seg_audio, spk_label, conf, dur))
                     buf.reset()
 
         return completed
 
-    def _identify_speaker_segment(self, audio: np.ndarray, channel_hint: int) -> Tuple[str, float]:
-        """Identify speaker identity using channel hint or deep voiceprint.
+    def _identify_speaker_segment(
+        self,
+        audio: np.ndarray,
+        channel_hint: int,
+        embedding: Optional[np.ndarray] = None,
+    ) -> Tuple[str, float]:
+        """Identify speaker identity using cached pre-encode embedding, channel hint, or fallback.
 
-        By default, returns lightweight channel-based speaker label to prevent blocking
-        the real-time audio chunk worker. Asynchronous speaker identification or
-        diarize_and_split is executed downstream in the pipeline worker.
+        When Sortformer pre-encode embedding is available, performs instantaneous vector similarity
+        matching against persistent and temporary profiles, eliminating redundant ONNX forward passes.
         """
-        if self.enable_deep_identification and self.diarizer is not None and hasattr(self.diarizer, "identify_speaker"):
+        duration_s = float(len(audio) / self.sample_rate)
+
+        # 1. Fast embedding reuse: Match against persistent/temporary voiceprints without ONNX forward
+        if (
+            embedding is not None
+            and isinstance(embedding, np.ndarray)
+            and self.diarizer is not None
+            and hasattr(self.diarizer, "identify_speaker_from_embedding")
+        ):
+            try:
+                res = self.diarizer.identify_speaker_from_embedding(
+                    embedding, duration_s=duration_s
+                )
+                if isinstance(res, tuple) and len(res) >= 2 and isinstance(res[0], str):
+                    return res[0], float(res[1])
+            except Exception as e:
+                print(f"[!] Warning in fast speaker identification from embedding: {e}")
+
+        # 2. Deep identification fallback (legacy or when embedding is not available)
+        if (
+            self.enable_deep_identification
+            and self.diarizer is not None
+            and hasattr(self.diarizer, "identify_speaker")
+        ):
             try:
                 spk, conf, _ = self.diarizer.identify_speaker(audio, self.sample_rate)
                 return spk, conf
             except Exception as e:
-                print(f"[!] Warning in segmenter speaker identification: {e}")
+                print(f"[!] Warning in segmenter deep speaker identification: {e}")
 
+        # 3. Default channel-based label
         return f"講者 {channel_hint + 1}", 1.0
 
     def flush(self) -> List[Tuple[np.ndarray, str, float, float]]:
@@ -336,7 +422,8 @@ class StreamingDiarizationSegmenter:
         for ch, buf in self.channel_buffers.items():
             if buf.in_speech and buf.speech_samples >= self.min_speech_samples:
                 seg_audio = buf.get_utterance_audio()
-                spk, conf = self._identify_speaker_segment(seg_audio, ch)
+                mean_emb = buf.get_utterance_embedding()
+                spk, conf = self._identify_speaker_segment(seg_audio, ch, embedding=mean_emb)
                 dur = round(len(seg_audio) / self.sample_rate, 2)
                 completed.append((seg_audio, spk, conf, dur))
                 buf.reset()
