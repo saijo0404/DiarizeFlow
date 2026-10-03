@@ -423,6 +423,29 @@ class TestHUDOverlaySpeakerRename(unittest.TestCase):
 
         overlay.close()
 
+    def test_overlay_remote_speaker_renamed_event(self):
+        overlay = TransparentSubtitleOverlay(
+            enable_network=False,
+            auto_start_capture=False,
+        )
+
+        overlay.show_subtitle("講者 2", "Hello", "你好")
+        self.assertEqual(overlay.cards[-1].speaker, "講者 2")
+
+        # Simulate receiving a speaker_renamed event broadcast from websocket
+        overlay._handle_subtitle_event({
+            "type": "speaker_renamed",
+            "old_speaker": "講者 2",
+            "new_speaker": "Bob",
+            "color": "#60a5fa",
+        })
+
+        self.assertEqual(overlay.cards[-1].speaker, "Bob")
+        self.assertEqual(overlay.cards[-1].badge.text(), "Bob")
+        self.assertIn("#60a5fa", overlay.cards[-1].badge.styleSheet())
+
+        overlay.close()
+
 
 if __name__ == "__main__":
     unittest.main()

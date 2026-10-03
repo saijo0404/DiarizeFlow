@@ -1030,15 +1030,7 @@ class TransparentSubtitleOverlay(QWidget):
                         try:
                             msg = ws.recv(timeout=1.0)
                             data = json.loads(msg)
-                            if data.get("type") == "speaker_renamed":
-                                old_spk = data.get("old_speaker")
-                                new_spk = data.get("new_speaker")
-                                col = data.get("color")
-                                if old_spk and new_spk:
-                                    for c in self._cards:
-                                        if c.speaker == old_spk:
-                                            c.update_speaker(new_spk, col)
-                            elif data.get("type") != "connection":
+                            if data.get("type") != "connection":
                                 self.subtitle_received_signal.emit(data)
                         except TimeoutError:
                             continue
@@ -1113,6 +1105,20 @@ class TransparentSubtitleOverlay(QWidget):
         if hasattr(event, "to_dict"):
             event = event.to_dict()
         elif not isinstance(event, dict):
+            return
+
+        if event.get("type") == "speaker_renamed":
+            old_spk = event.get("old_speaker")
+            new_spk = event.get("new_speaker")
+            col = event.get("color")
+            if old_spk and new_spk:
+                for c in self._cards:
+                    if c.speaker == old_spk:
+                        c.update_speaker(new_spk, col)
+                if self._current_speaker == old_spk:
+                    self._current_speaker = new_spk
+                if self._header_speaker_label.text() == old_spk:
+                    self._header_speaker_label.setText(new_spk)
             return
 
         speaker = event.get("speaker", "講者 1")
