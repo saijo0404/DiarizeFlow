@@ -93,6 +93,8 @@ class TestAppConfigSerialization(unittest.TestCase):
         self.assertEqual(data["vad"]["post_pad_ms"], 150)
         self.assertIn("concurrency_limit", data.get("llm", {}))
         self.assertEqual(data["llm"]["concurrency_limit"], 3)
+        self.assertIn("max_cards", data.get("ui", {}))
+        self.assertEqual(data["ui"]["max_cards"], 3)
 
     def test_llm_concurrency_limit_roundtrip(self):
         """Verify concurrency_limit in LLMConfig is preserved in roundtrip."""
@@ -102,6 +104,15 @@ class TestAppConfigSerialization(unittest.TestCase):
         d = cfg.to_dict()
         loaded = AppConfig.from_dict(d)
         self.assertEqual(loaded.llm.concurrency_limit, 5)
+
+    def test_ui_max_cards_roundtrip(self):
+        """Verify max_cards in UIConfig is preserved in roundtrip."""
+        cfg = AppConfig()
+        self.assertEqual(cfg.ui.max_cards, 3)
+        cfg.ui.max_cards = 5
+        d = cfg.to_dict()
+        loaded = AppConfig.from_dict(d)
+        self.assertEqual(loaded.ui.max_cards, 5)
 
 
 if __name__ == "__main__":
