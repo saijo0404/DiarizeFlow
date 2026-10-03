@@ -1285,23 +1285,25 @@ class TransparentSubtitleOverlay(QWidget):
         elif not isinstance(event, dict):
             return
 
-        if event.get("type") == "speaker_renamed":
-            old_spk = event.get("old_speaker")
-            new_spk = event.get("new_speaker")
-            col = event.get("color")
-            if old_spk and new_spk:
-                for c in self._cards:
-                    if c.speaker == old_spk:
-                        c.update_speaker(new_spk, col)
-                if self._current_speaker == old_spk:
-                    self._current_speaker = new_spk
-                if self._header_speaker_label.text() == old_spk:
-                    self._header_speaker_label.setText(new_spk)
+        evt_type = event.get("type")
+        if evt_type == "speaker_renamed":
+            self._handle_speaker_renamed_event(event)
+            return
+        elif evt_type == "speaker_deleted":
+            self._handle_speaker_deleted_event(event)
+            return
+        elif evt_type in ("connection", "ping", "pong"):
+            return
+        elif evt_type is not None and evt_type != "subtitle":
+            print(f"[UI] 忽略非字幕控制事件: {evt_type}")
+            return
+
+        orig = event.get("original_text", "")
+        trans = event.get("translated_text", "")
+        if not (trans and trans.strip()) and not (orig and orig.strip()):
             return
 
         speaker = event.get("speaker", "講者 1")
-        orig = event.get("original_text", "")
-        trans = event.get("translated_text", "")
         conf = event.get("confidence", 1.0)
         print(f"[UI] 收到即時字幕: [{speaker}] 譯文='{trans}'")
         latency = event.get("latency", {})
@@ -1327,6 +1329,38 @@ class TransparentSubtitleOverlay(QWidget):
             if self.is_capturing:
                 self.vu_indicator.setText(f"● 延遲 {int(tot)}ms")
         self.show_subtitle(speaker, orig, trans, conf)
+
+    def _handle_speaker_renamed_event(self, event: dict):
+        """Handle speaker rename event by updating active cards and header badge."""
+        old_spk = event.get("old_speaker")
+        new_spk = event.get("new_speaker")
+        col = event.get("color")
+        if old_spk and new_spk:
+            for c in self._cards:
+                if c.speaker == old_spk:
+                    c.update_speaker(new_spk, col)
+            if self._current_speaker == old_spk:
+                self._current_speaker = new_spk
+            if self._header_speaker_label.text() == old_spk:
+                self._header_speaker_label.setText(new_spk)
+            print(f"[*] [HUD] 講者「{old_spk}」已重新命名為「{new_spk}」")
+
+    def _handle_speaker_deleted_event(self, event: dict):
+        """Handle speaker profile deletion event by updating active cards and tracking."""
+        spk_id = event.get("speaker_id") or event.get("speaker") or event.get("name")
+        if not spk_id:
+            return
+
+        for card in self._cards:
+            if card.speaker == spk_id:
+                card.update_speaker("未知講者")
+
+        if self._current_speaker == spk_id:
+            self._current_speaker = "未知講者"
+        if self._header_speaker_label.text() == spk_id:
+            self._header_speaker_label.setText("未知講者")
+
+        print(f"[*] [HUD] 收到講者刪除事件: 講者「{spk_id}」已被移除，活躍卡片已標記為未知講者")
 
     def _format_translated_text(self, speaker: str, text: str) -> str:
         """Format translated text with clean 'Speaker: text' prefix."""
@@ -1359,6 +1393,10 @@ class TransparentSubtitleOverlay(QWidget):
 
     def show_subtitle(self, speaker: str, original: str, translated: str, confidence: float = 1.0):
         """Display translated subtitle in the bottom-anchored multi-card queue."""
+        # Empty text defense: ignore and do not render ghost empty cards
+        if not (translated and translated.strip()) and not (original and original.strip()):
+            return
+
         self.idle_label.hide()
 
         self._current_speaker = speaker
@@ -1462,6 +1500,34 @@ class TransparentSubtitleOverlay(QWidget):
                 pass
         except Exception as e:
             print(f"[!] 無法透過 REST API 同步講者重命名: {e}")
+
+    def delete_speaker(self, speaker_id: str):
+        """Delete speaker across active HUD cards, pipeline diarizer, and persistent storage."""
+        self._handle_speaker_deleted_event({"speaker_id": speaker_id})
+        if self.pipeline and hasattr(self.pipeline, "delete_speaker"):
+            self.pipeline.delete_speaker(speaker_id)
+        elif getattr(self, "enable_network", True):
+            threading.Thread(
+                target=self._send_delete_api,
+                args=(speaker_id,),
+                daemon=True,
+            ).start()
+
+    def _send_delete_api(self, speaker_id: str):
+        try:
+            import urllib.request
+            import urllib.parse
+            port = self.config.server.port
+            url = f"http://127.0.0.1:{port}/api/speakers/{urllib.parse.quote(speaker_id)}"
+            req = urllib.request.Request(
+                url,
+                headers={"Content-Type": "application/json"},
+                method="DELETE",
+            )
+            with urllib.request.urlopen(req, timeout=2.0):
+                pass
+        except Exception as e:
+            print(f"[!] 無法透過 REST API 同步講者刪除: {e}")
 
     def _start_fade_out(self):
         """Dismiss all active cards and display the idle placeholder."""
