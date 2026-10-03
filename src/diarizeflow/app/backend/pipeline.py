@@ -62,6 +62,19 @@ class DiarizeFlowPipeline:
             min_gain=getattr(self.config.audio, "agc_min_gain", 0.15),
         )
 
+        # Setup Target-Speaker Extraction (TSE) for overlap speech waveform separation
+        tse_cfg = getattr(self.config, "tse", None)
+        self.tse = None
+        if tse_cfg is not None and getattr(tse_cfg, "enabled", True):
+            try:
+                from diarizeflow.app.audio.tse import TargetSpeakerExtractor
+                self.tse = TargetSpeakerExtractor(
+                    config=tse_cfg,
+                    sample_rate=self.config.audio.sample_rate,
+                )
+            except Exception as e:
+                print(f"[!] Warning: TargetSpeakerExtractor initialization skipped: {e}")
+
         # Setup Streaming Diarization-Driven Segmenter (replaces traditional VAD)
         self.segmenter = StreamingDiarizationSegmenter(
             sample_rate=self.config.audio.sample_rate,
@@ -73,6 +86,8 @@ class DiarizeFlowPipeline:
             post_pad_ms=getattr(self.config.vad, "post_pad_ms", 150),
             diarizer=self.diarizer,
             on_utterance=self._on_diarized_utterance,
+            tse_extractor=self.tse,
+            tse_enabled=getattr(tse_cfg, "enabled", True) if tse_cfg else False,
         )
         # Keep self.vad alias for backward compatibility
         self.vad = self.segmenter
@@ -464,6 +479,10 @@ class DiarizeFlowPipeline:
             self.segmenter.pre_pad_ms = getattr(new_config.vad, "pre_pad_ms", 150)
             self.segmenter.post_pad_ms = getattr(new_config.vad, "post_pad_ms", 150)
             self.segmenter.energy_threshold = new_config.vad.energy_threshold
+            if hasattr(new_config, "tse"):
+                self.segmenter.tse_enabled = getattr(new_config.tse, "enabled", True)
+        if hasattr(self, "tse") and self.tse is not None and hasattr(new_config, "tse"):
+            self.tse.update_config(new_config.tse)
         if hasattr(self, "stream_agc"):
             self.stream_agc.target_rms = getattr(new_config.audio, "agc_target_rms", 0.06)
             self.stream_agc.max_gain = getattr(new_config.audio, "agc_max_gain", 25.0)

@@ -69,6 +69,19 @@ class DiarizationConfig:
 
 
 @dataclass
+class TSEConfig:
+    enabled: bool = True
+    model_path: str = "models/tse/target_speaker_extractor.onnx"
+    mask_threshold: float = 0.50
+    min_gain: float = 0.05  # -26 dB attenuation floor for interfering cross-talk speech
+    n_fft: int = 512
+    hop_length: int = 160
+    win_length: int = 400
+    embedding_dim: int = 512
+    use_gpu: bool = False
+
+
+@dataclass
 class ASRConfig:
     engine: str = "sensevoice"  # "sensevoice", "faster-whisper"
     model_dir: str = "models/sensevoice_small"
@@ -192,6 +205,7 @@ class AppConfig:
     audio: AudioConfig = field(default_factory=AudioConfig)
     vad: VADConfig = field(default_factory=VADConfig)
     diarization: DiarizationConfig = field(default_factory=DiarizationConfig)
+    tse: TSEConfig = field(default_factory=TSEConfig)
     asr: ASRConfig = field(default_factory=ASRConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     ui: UIConfig = field(default_factory=UIConfig)
@@ -236,6 +250,7 @@ class AppConfig:
             audio=AudioConfig(**filter_dataclass_kwargs(AudioConfig, data.get("audio", {}))),
             vad=VADConfig(**filter_dataclass_kwargs(VADConfig, data.get("vad", {}))),
             diarization=DiarizationConfig(**filter_dataclass_kwargs(DiarizationConfig, diar_dict)),
+            tse=TSEConfig(**filter_dataclass_kwargs(TSEConfig, data.get("tse", {}))),
             asr=ASRConfig(**filter_dataclass_kwargs(ASRConfig, data.get("asr", {}))),
             llm=LLMConfig(**filter_dataclass_kwargs(LLMConfig, data.get("llm", {}))),
             ui=UIConfig(**filter_dataclass_kwargs(UIConfig, ui_dict)),
