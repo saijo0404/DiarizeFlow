@@ -113,6 +113,8 @@ class UIConfig:
     accent_color: str = "#38bdf8"
     window_width: int = 760
     window_height: int = 260
+    window_x: Optional[int] = None
+    window_y: Optional[int] = None
     max_cards: int = 3  # 多卡片佇列上限 (預設 3 則發言)
 
 
@@ -219,6 +221,16 @@ class AppConfig:
                 ui_dict["opacity"] = 0.50
         except (TypeError, ValueError):
             ui_dict["opacity"] = 0.50
+
+        for coord in ("window_x", "window_y", "window_width", "window_height"):
+            if coord in ui_dict:
+                if ui_dict[coord] is not None:
+                    try:
+                        ui_dict[coord] = int(ui_dict[coord])
+                    except (TypeError, ValueError):
+                        ui_dict.pop(coord, None)
+                elif coord in ("window_width", "window_height"):
+                    ui_dict.pop(coord, None)
 
         return cls(
             audio=AudioConfig(**filter_dataclass_kwargs(AudioConfig, data.get("audio", {}))),

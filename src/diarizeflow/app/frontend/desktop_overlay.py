@@ -24,6 +24,7 @@ from PySide6.QtCore import (
     QEasingCurve,
     QPoint,
     QPropertyAnimation,
+    QRect,
     QRectF,
     QSize,
     Qt,
@@ -712,12 +713,15 @@ class TransparentSubtitleOverlay(QWidget):
         parent=None,
         enable_network: bool = True,
         auto_start_capture: bool = True,
+        enable_persistence: bool = True,
     ):
         super().__init__(parent)
         self.config = config or AppConfig()
         self.pipeline = pipeline
         self.enable_network = enable_network
         self.auto_start_capture = auto_start_capture
+        self.enable_persistence = enable_persistence
+        self._geometry_modified = False
         if self.pipeline and not self.pipeline.is_running:
             print("[*] 正在啟動 DiarizeFlow Pipeline 背景處理核心...")
             self.pipeline.start()
@@ -755,16 +759,22 @@ class TransparentSubtitleOverlay(QWidget):
         self.fade_timer.setSingleShot(True)
         self.fade_timer.timeout.connect(self._start_fade_out)
 
+        # Debounce timer for saving window geometry changes
+        self._save_geometry_timer = QTimer(self)
+        self._save_geometry_timer.setSingleShot(True)
+        self._save_geometry_timer.setInterval(800)
+        self._save_geometry_timer.timeout.connect(self._save_window_geometry)
+
         self._build_ui()
         self._init_system_tray()
         self._init_shortcuts()
         self._init_network()
         self._connect_signals()
 
-        # Position at bottom-center of primary screen with flexible stable bounds
+        # Position with boundary validation or fallback to bottom-center of primary screen
         self.setMinimumSize(480, 140)
         self.resize(self.config.ui.window_width, self.config.ui.window_height)
-        self._center_at_bottom()
+        self._restore_or_center_geometry()
 
         # Initial welcome display (customized for first-run calibration or normal launch)
         if getattr(self.config, "_just_calibrated", False):
@@ -1013,6 +1023,35 @@ class TransparentSubtitleOverlay(QWidget):
         card_layout.addWidget(self.subtitle_container, 1)
         root_layout.addWidget(self.card)
 
+    def _is_geometry_valid_on_any_screen(self, x: int, y: int, width: int, height: int) -> bool:
+        """Check if a window rectangle has sufficient visible and grab-able area on any active display."""
+        screens = QApplication.screens()
+        if not screens:
+            return False
+
+        win_rect = QRect(x, y, max(width, 50), max(height, 50))
+        for scr in screens:
+            avail_geo = scr.availableGeometry()
+            intersection = avail_geo.intersected(win_rect)
+            # Require at least 80px width and 40px height to be visible and grab-able on an active display
+            if intersection.width() >= min(80, win_rect.width()) and intersection.height() >= min(40, win_rect.height()):
+                return True
+        return False
+
+    def _restore_or_center_geometry(self):
+        """Restore window position from config if valid on an active screen, otherwise center at bottom."""
+        win_x = self.config.ui.window_x
+        win_y = self.config.ui.window_y
+
+        if win_x is not None and win_y is not None:
+            if self._is_geometry_valid_on_any_screen(win_x, win_y, self.width(), self.height()):
+                self.move(win_x, win_y)
+                self.anchor_bottom_y = win_y + self.height()
+                return
+
+        # Fallback to bottom-center of primary screen
+        self._center_at_bottom()
+
     def _center_at_bottom(self):
         screen = QApplication.primaryScreen()
         if screen:
@@ -1021,6 +1060,29 @@ class TransparentSubtitleOverlay(QWidget):
             y = geo.height() - self.height() - 60
             self.move(x, y)
             self.anchor_bottom_y = y + self.height()
+
+    def _save_window_geometry(self):
+        """Persist current window position and size to configuration."""
+        if not getattr(self, "_geometry_modified", False):
+            return
+        self.config.ui.window_x = self.x()
+        self.config.ui.window_y = self.y()
+        self.config.ui.window_width = self.width()
+        self.config.ui.window_height = self.height()
+        if not getattr(self, "enable_persistence", True):
+            return
+        if os.environ.get("PYTEST_CURRENT_TEST") and not getattr(self, "_force_save_in_test", False):
+            return
+        try:
+            self.config.save()
+        except Exception as e:
+            print(f"[!] 保存 HUD 視窗幾何配置失敗: {e}")
+
+    def _reset_window_position(self):
+        """Reset window position to primary screen bottom-center and persist."""
+        self._center_at_bottom()
+        self._geometry_modified = True
+        self._save_window_geometry()
 
     def _create_app_icon(self) -> QIcon:
         """Create a clean vector application icon for HUD window and system tray."""
@@ -1123,6 +1185,11 @@ class TransparentSubtitleOverlay(QWidget):
         self.action_tray_toggle_win = QAction("👁️ 顯示/隱藏 HUD 視窗", self)
         self.action_tray_toggle_win.triggered.connect(self._toggle_window_visibility)
         self.tray_menu.addAction(self.action_tray_toggle_win)
+
+        # Action: Reset Window Position
+        self.action_tray_reset_pos = QAction("🎯 重設視窗位置至主螢幕中央", self)
+        self.action_tray_reset_pos.triggered.connect(self._reset_window_position)
+        self.tray_menu.addAction(self.action_tray_reset_pos)
 
         self.tray_menu.addSeparator()
 
@@ -1881,9 +1948,21 @@ class TransparentSubtitleOverlay(QWidget):
     def mouseReleaseEvent(self, event):
         self.is_dragging = False
         self.anchor_bottom_y = self.y() + self.height()
+        self.config.ui.window_x = self.x()
+        self.config.ui.window_y = self.y()
+        self.config.ui.window_width = self.width()
+        self.config.ui.window_height = self.height()
+        self._geometry_modified = True
+        if hasattr(self, "_save_geometry_timer"):
+            self._save_geometry_timer.start()
 
     def closeEvent(self, event):
         self.is_running = False
+        if hasattr(self, "_save_geometry_timer") and self._save_geometry_timer.isActive():
+            self._save_geometry_timer.stop()
+            self._geometry_modified = True
+        if getattr(self, "_geometry_modified", False):
+            self._save_window_geometry()
         self._stop_capture()
         self._unregister_windows_global_hotkeys()
         if hasattr(self, "tray_icon") and self.tray_icon:
