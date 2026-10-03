@@ -33,6 +33,11 @@ class AudioConfig:
     agc_target_rms: float = 0.06  # ASR 最佳黃金輸入能量 (-24 dBFS)
     agc_max_gain: float = 25.0  # 最大放大倍數 (+28 dB, 即使音量 0.006 也能自動拉高至人聲檢測區間)
     agc_min_gain: float = 0.15  # 最小縮小倍數 (-16.5 dB, 抑制爆音防破音)
+    routing_mode: str = "smart"  # "smart" (智慧活動動態分流), "mix" (直接相加混音), "mic_only", "loopback_only"
+    mic_activity_threshold: float = 0.008  # 麥克風活動靈敏度門檻
+    loopback_activity_threshold: float = 0.008  # 系統聲音活動靈敏度門檻
+    bleed_suppression: bool = True  # 啟用外放揚聲器迴音抑制 (AES)
+    bleed_ratio: float = 0.40  # 麥克風拾取電腦外放聲音之能量洩漏門檻比例
 
 
 @dataclass
