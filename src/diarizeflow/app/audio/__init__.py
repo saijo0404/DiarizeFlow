@@ -4,6 +4,7 @@ from diarizeflow.app.audio.devices import AudioDeviceInfo, list_audio_devices, g
 from diarizeflow.app.audio.capture import AudioCaptureStream, SmartAudioRouter
 from diarizeflow.app.audio.vad import EnergyVADSegmenter
 from diarizeflow.app.audio.segmenter import StreamingDiarizationSegmenter, SpeakerChannelBuffer
+from diarizeflow.app.audio.tse import TargetSpeakerExtractor
 
 __all__ = [
     "AudioDeviceInfo",
@@ -14,4 +15,5 @@ __all__ = [
     "EnergyVADSegmenter",
     "StreamingDiarizationSegmenter",
     "SpeakerChannelBuffer",
+    "TargetSpeakerExtractor",
 ]

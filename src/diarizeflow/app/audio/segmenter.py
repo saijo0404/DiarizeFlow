@@ -103,6 +103,8 @@ class StreamingDiarizationSegmenter:
         diarizer: Optional[Any] = None,
         on_utterance: Optional[Callable[[np.ndarray, str, float, float], None]] = None,
         enable_deep_identification: bool = False,
+        tse_extractor: Optional[Any] = None,
+        tse_enabled: bool = True,
     ):
         self.sample_rate = sample_rate
         self.sad_threshold = sad_threshold
@@ -114,6 +116,13 @@ class StreamingDiarizationSegmenter:
         self.diarizer = diarizer
         self.on_utterance = on_utterance
         self.enable_deep_identification = enable_deep_identification
+        self.tse_extractor = tse_extractor
+        self.tse_enabled = tse_enabled
+
+        # Overlap and TSE separation statistics
+        self.total_overlap_chunks: int = 0
+        self.separated_overlap_chunks: int = 0
+        self.channel_last_embeddings: Dict[int, np.ndarray] = {}
 
         # Sample limits
         self.silence_timeout_samples = int((silence_timeout_ms / 1000.0) * self.sample_rate)
@@ -277,20 +286,47 @@ class StreamingDiarizationSegmenter:
                         active_channels.add(ch)
 
         completed: List[Tuple[np.ndarray, str, float, float]] = []
+        is_overlap = len(active_channels) > 1
+
+        if is_overlap:
+            self.total_overlap_chunks += 1
 
         # Route audio and update per-channel buffers
         for ch, buf in self.channel_buffers.items():
             if ch in active_channels:
+                routed_chunk = chunk
+                if is_overlap and self.tse_extractor is not None and self.tse_enabled:
+                    # Target-Speaker Extraction (TSE) conditioned on target speaker's embedding
+                    target_emb = buf.get_utterance_embedding()
+                    if target_emb is None:
+                        target_emb = self.channel_last_embeddings.get(ch)
+                    if target_emb is None:
+                        target_emb = step_emb
+
+                    if target_emb is not None:
+                        try:
+                            routed_chunk = self.tse_extractor.extract(
+                                chunk, target_emb, sample_rate=self.sample_rate
+                            )
+                            self.separated_overlap_chunks += 1
+                        except Exception as e:
+                            print(f"[!] Warning: TSE extraction failed on channel {ch}: {e}")
+                            routed_chunk = chunk
+                elif not is_overlap and step_emb is not None:
+                    self.channel_last_embeddings[ch] = step_emb
+
                 if not buf.in_speech:
-                    buf.start_speech(list(self._pre_buffer), initial_chunk=chunk, initial_embedding=step_emb)
+                    buf.start_speech(list(self._pre_buffer), initial_chunk=routed_chunk, initial_embedding=step_emb)
                 else:
-                    buf.add_speech_chunk(chunk, embedding=step_emb)
+                    buf.add_speech_chunk(routed_chunk, embedding=step_emb)
 
                 # Enforce max duration cutoff even during continuous speech
                 if buf.speech_samples >= self.max_speech_samples:
                     if buf.speech_samples >= self.min_speech_samples:
                         seg_audio = buf.get_utterance_audio()
                         mean_emb = buf.get_utterance_embedding()
+                        if mean_emb is not None:
+                            self.channel_last_embeddings[ch] = mean_emb
                         spk_label, conf = self._identify_speaker_segment(seg_audio, ch, embedding=mean_emb)
                         dur = round(len(seg_audio) / self.sample_rate, 2)
                         completed.append((seg_audio, spk_label, conf, dur))
@@ -308,6 +344,8 @@ class StreamingDiarizationSegmenter:
                         if buf.speech_samples >= self.min_speech_samples:
                             seg_audio = buf.get_utterance_audio()
                             mean_emb = buf.get_utterance_embedding()
+                            if mean_emb is not None:
+                                self.channel_last_embeddings[ch] = mean_emb
                             spk_label, conf = self._identify_speaker_segment(seg_audio, ch, embedding=mean_emb)
                             dur = round(len(seg_audio) / self.sample_rate, 2)
                             completed.append((seg_audio, spk_label, conf, dur))
@@ -416,6 +454,22 @@ class StreamingDiarizationSegmenter:
         # 3. Default channel-based label
         return f"講者 {channel_hint + 1}", 1.0
 
+    def separate_utterance(
+        self, audio: np.ndarray, speaker_embedding: Optional[np.ndarray] = None
+    ) -> np.ndarray:
+        """Apply Target-Speaker Extraction (TSE) to separate clean target waveform from mixture."""
+        if self.tse_extractor is not None and self.tse_enabled and speaker_embedding is not None:
+            return self.tse_extractor.extract(audio, speaker_embedding, sample_rate=self.sample_rate)
+        return audio
+
+    @property
+    def overlap_stats(self) -> Dict[str, int]:
+        """Return overlap speech detection and separation statistics."""
+        return {
+            "total_overlap_chunks": self.total_overlap_chunks,
+            "separated_overlap_chunks": self.separated_overlap_chunks,
+        }
+
     def flush(self) -> List[Tuple[np.ndarray, str, float, float]]:
         """Flush and return any pending speaker utterances in active buffers."""
         completed: List[Tuple[np.ndarray, str, float, float]] = []
@@ -423,6 +477,8 @@ class StreamingDiarizationSegmenter:
             if buf.in_speech and buf.speech_samples >= self.min_speech_samples:
                 seg_audio = buf.get_utterance_audio()
                 mean_emb = buf.get_utterance_embedding()
+                if mean_emb is not None:
+                    self.channel_last_embeddings[ch] = mean_emb
                 spk, conf = self._identify_speaker_segment(seg_audio, ch, embedding=mean_emb)
                 dur = round(len(seg_audio) / self.sample_rate, 2)
                 completed.append((seg_audio, spk, conf, dur))
