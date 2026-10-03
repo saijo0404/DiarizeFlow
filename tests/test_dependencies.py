@@ -66,6 +66,58 @@ class TestRuntimeDependencies(unittest.TestCase):
 
         self.assertTrue(hasattr(ml_dtypes, "float8_e4m3fn"))
 
+    def test_nemo_and_onnxsim_moved_to_optional_export_dependencies(self):
+        """Verify nemo-toolkit, onnxsim, and onnxscript are in optional export group, not core dependencies (Issue #35)."""
+        pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        with open(pyproject_path, "rb") as f:
+            data = tomllib.load(f)
+
+        # Core dependencies must NOT contain heavy export-only packages
+        core_deps = data.get("project", {}).get("dependencies", [])
+        core_names = {
+            dep.split(">=")[0].split("==")[0].split("<=")[0].split("~=")[0].split(">")[0].split("<")[0].strip().lower().replace("_", "-")
+            for dep in core_deps
+        }
+        self.assertNotIn("nemo-toolkit", core_names)
+        self.assertNotIn("onnxsim", core_names)
+        self.assertNotIn("onnxscript", core_names)
+
+        # [project.optional-dependencies].export must declare them
+        optional_deps = data.get("project", {}).get("optional-dependencies", {})
+        self.assertIn("export", optional_deps)
+        export_names = {
+            dep.split(">=")[0].split("==")[0].split("<=")[0].split("~=")[0].split(">")[0].split("<")[0].strip().lower().replace("_", "-")
+            for dep in optional_deps["export"]
+        }
+        self.assertIn("nemo-toolkit", export_names)
+        self.assertIn("onnxsim", export_names)
+        self.assertIn("onnxscript", export_names)
+
+        # [project.optional-dependencies].dev and [dependency-groups].dev must declare pytest tools
+        self.assertIn("dev", optional_deps)
+        dev_names = {
+            dep.split(">=")[0].split("==")[0].split("<=")[0].split("~=")[0].split(">")[0].split("<")[0].strip().lower().replace("_", "-")
+            for dep in optional_deps["dev"]
+        }
+        self.assertIn("pytest", dev_names)
+        self.assertIn("pytest-asyncio", dev_names)
+
+        dep_groups = data.get("dependency-groups", {})
+        self.assertIn("dev", dep_groups)
+
+    def test_pytest_configuration_restricts_testpaths_and_excludes_scratch(self):
+        """Verify pytest ini_options configures testpaths to tests/ and ignores scratch/ (Issue #35)."""
+        pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        with open(pyproject_path, "rb") as f:
+            data = tomllib.load(f)
+
+        pytest_config = data.get("tool", {}).get("pytest", {}).get("ini_options", {})
+        self.assertIn("testpaths", pytest_config)
+        self.assertEqual(pytest_config["testpaths"], ["tests"])
+
+        self.assertIn("norecursedirs", pytest_config)
+        self.assertIn("scratch", pytest_config["norecursedirs"])
+
 
 if __name__ == "__main__":
     unittest.main()

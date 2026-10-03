@@ -9,7 +9,6 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import onnx
-import onnxsim
 import torch
 import torch.nn as nn
 
@@ -96,7 +95,11 @@ def export_nemo_to_onnx(
     # 2. Restore model from .nemo
     print(f"[*] 載入 NeMo 模型權重: {nemo_file}")
     t0 = time.time()
-    from nemo.collections.asr.models import SortformerEncLabelModel
+    try:
+        from nemo.collections.asr.models import SortformerEncLabelModel
+    except ImportError:
+        print("[!] 尚未安裝模型轉換依賴。請執行: uv sync --extra export (或 pip install -e '.[export]')")
+        sys.exit(1)
 
     model = SortformerEncLabelModel.restore_from(
         restore_path=str(nemo_file),
@@ -161,6 +164,11 @@ def export_nemo_to_onnx(
 
     # 6. Run onnxsim
     if simplify:
+        try:
+            import onnxsim
+        except ImportError:
+            print("[!] 尚未安裝 onnxsim 模型簡化依賴。請執行: uv sync --extra export (或 pip install -e '.[export]')")
+            sys.exit(1)
         print(f"[*] 執行 onnxsim 模型結構簡化與常數摺疊...")
         t2 = time.time()
         model_proto = onnx.load(str(raw_output))
