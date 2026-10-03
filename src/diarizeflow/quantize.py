@@ -193,12 +193,38 @@ def quantize_int8(
     return out_path
 
 
+def is_simulated_quantization(precision: Union[str, QuantPrecision]) -> bool:
+    """Return True if precision represents weight-only numerical emulation (fake quantization)."""
+    p_str = precision.value if isinstance(precision, QuantPrecision) else str(precision).lower()
+    return p_str in ("fp8", "nvfp4", "mxfp4")
+
+
+def is_native_quantization(precision: Union[str, QuantPrecision]) -> bool:
+    """Return True if precision produces native hardware-accelerated ONNX graph operators."""
+    p_str = precision.value if isinstance(precision, QuantPrecision) else str(precision).lower()
+    return p_str in ("fp16", "int8", "w4a16")
+
+
+def get_quantization_execution_mode(precision: Union[str, QuantPrecision]) -> str:
+    """Return human-readable execution mode for the precision."""
+    if is_simulated_quantization(precision):
+        return "數值模擬 (Weight Emulation / Fake Quant)"
+    elif is_native_quantization(precision):
+        return "實測硬體 (Native Graph Operators)"
+    return "基準模型 (FP32 Baseline)"
+
+
 def quantize_fp8(
     input_model_path: str,
     output_model_path: str,
     per_channel: bool = True,
 ) -> Path:
-    """Quantize ONNX model weights to Float8 E4M3FN (8-bit floating point) precision.
+    """Quantize ONNX model weights to Float8 E4M3FN precision via weight-only emulation (fake quantization).
+
+    NOTE (Transparency Notice):
+    Weights are clamped and projected to the Float8 E4M3FN grid, then stored as floating-point
+    initializers. This allows mathematical evaluation of accuracy loss, SNR, and cosine similarity
+    without requiring native Float8 Tensor Core runtime execution operators in ONNX Runtime.
 
     Args:
         input_model_path: Path to the input FP32/FP16 ONNX model.
@@ -207,7 +233,8 @@ def quantize_fp8(
     """
     import ml_dtypes
 
-    print(f"[*] 執行 FP8 (E4M3FN) 權重量化 (per_channel={per_channel}): {input_model_path}")
+    print(f"[*] 執行 FP8 (E4M3FN) 數值誤差模擬量化 (Weight Emulation / Fake Quantization, per_channel={per_channel}): {input_model_path}")
+    print("    ℹ️ 說明: 權重投影至 FP8 格點後以浮點存儲，用於評估數值特徵相似度 (非原生硬體 8-bit MatMul 算子)")
     model = onnx.load(str(input_model_path))
     FP8_MAX = 448.0
     count = 0
@@ -231,7 +258,7 @@ def quantize_fp8(
             new_init = numpy_helper.from_array(dequant.astype(arr.dtype), name=init.name)
             init.CopyFrom(new_init)
 
-    print(f"    共完成 {count} 個矩陣權重之 FP8 E4M3FN 量化 (合計 {total_params / 1e6:.2f} M 參數)")
+    print(f"    共完成 {count} 個矩陣權重之 FP8 E4M3FN 模擬量化 (合計 {total_params / 1e6:.2f} M 參數)")
     out_path = Path(output_model_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     onnx.save(model, str(out_path))
@@ -243,15 +270,18 @@ def quantize_nvfp4(
     output_model_path: str,
     block_size: int = 32,
 ) -> Path:
-    """Quantize ONNX model weights to NVIDIA Blackwell FP4 (NVFP4, E2M1) format.
+    """Quantize ONNX model weights to NVIDIA Blackwell FP4 (NVFP4, E2M1) format via weight-only emulation.
 
+    NOTE (Transparency Notice):
     Uses NVIDIA Blackwell two-level scaling:
     tensor = global_scale * (block_scale_fp8 * q_fp4)
     where each block (size 32) is quantized to the E2M1 FP4 grid with FP8 scale factor.
+    Dequantized float initializers are stored for numerical verification and accuracy evaluation.
     """
     import ml_dtypes
 
-    print(f"[*] 執行 NVIDIA NVFP4 (E2M1 + Block {block_size} FP8 Scale) 量化: {input_model_path}")
+    print(f"[*] 執行 NVIDIA NVFP4 (E2M1 + Block {block_size} FP8 Scale) 數值誤差模擬量化: {input_model_path}")
+    print("    ℹ️ 說明: 權重投影至 NVFP4 格點後以浮點存儲，用於評估數值特徵相似度 (非原生 Blackwell NVFP4 算子)")
     FP4_E2M1_VALS = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], dtype=np.float32)
     FP4_MAX = 6.0
 
@@ -298,7 +328,7 @@ def quantize_nvfp4(
             new_init = numpy_helper.from_array(q_arr.astype(arr.dtype), name=init.name)
             init.CopyFrom(new_init)
 
-    print(f"    共完成 {count} 個矩陣權重之 NVFP4 (E2M1) 量化 (合計 {total_params / 1e6:.2f} M 參數)")
+    print(f"    共完成 {count} 個矩陣權重之 NVFP4 (E2M1) 模擬量化 (合計 {total_params / 1e6:.2f} M 參數)")
     out_path = Path(output_model_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     onnx.save(model, str(out_path))
@@ -310,12 +340,15 @@ def quantize_mxfp4(
     output_model_path: str,
     block_size: int = 32,
 ) -> Path:
-    """Quantize ONNX model weights to OCP Microscaling FP4 (MXFP4, E2M1 + E8M0 scale) format.
+    """Quantize ONNX model weights to OCP Microscaling FP4 (MXFP4, E2M1 + E8M0 scale) format via weight-only emulation.
 
+    NOTE (Transparency Notice):
     Follows Open Compute Project (OCP) MX Specification with block size 32
-    and shared power-of-2 (2^k) E8M0 scale factor.
+    and shared power-of-2 (2^k) E8M0 scale factor. Dequantized float initializers
+    are stored for numerical verification and accuracy evaluation.
     """
-    print(f"[*] 執行 OCP Microscaling MXFP4 (E2M1 + E8M0 2^k Scale, Block {block_size}) 量化: {input_model_path}")
+    print(f"[*] 執行 OCP Microscaling MXFP4 (E2M1 + E8M0 2^k Scale, Block {block_size}) 數值誤差模擬量化: {input_model_path}")
+    print("    ℹ️ 說明: 權重投影至 MXFP4 格點後以浮點存儲，用於評估數值特徵相似度 (非原生 MXFP4 算子)")
     FP4_E2M1_VALS = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0], dtype=np.float32)
     FP4_MAX = 6.0
 
@@ -356,7 +389,7 @@ def quantize_mxfp4(
             new_init = numpy_helper.from_array(q_arr.astype(arr.dtype), name=init.name)
             init.CopyFrom(new_init)
 
-    print(f"    共完成 {count} 個矩陣權重之 MXFP4 (E2M1 + E8M0) 量化 (合計 {total_params / 1e6:.2f} M 參數)")
+    print(f"    共完成 {count} 個矩陣權重之 MXFP4 (E2M1 + E8M0) 模擬量化 (合計 {total_params / 1e6:.2f} M 參數)")
     out_path = Path(output_model_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     onnx.save(model, str(out_path))
@@ -633,9 +666,12 @@ def auto_quantize_and_verify(
     quant_mb = result_path.stat().st_size / (1024 * 1024)
     ratio = (1 - quant_mb / orig_mb) * 100
 
-    print(f"\n[✓] 量化成功！耗時 {elapsed:.2f} 秒")
+    exec_mode = get_quantization_execution_mode(target_precision)
+    print(f"\n[✓] 量化處理完成！耗時 {elapsed:.2f} 秒 (執行模式: {exec_mode})")
     print(f"    原始模型大小: {orig_mb:.2f} MB")
     print(f"    量化模型大小: {quant_mb:.2f} MB (節省 {ratio:.1f}% 空間)")
+    if is_simulated_quantization(target_precision):
+        print("    ℹ️ 備註: 該精度為權重數值模擬量化 (Weight Emulation)，輸出模型以浮點儲存投影權重以評估特徵保真度。")
     print(f"    量化模型儲存至: {result_path}")
 
     # 5. Similarity comparison and latency benchmark against original model

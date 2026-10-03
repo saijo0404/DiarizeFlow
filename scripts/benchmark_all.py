@@ -21,6 +21,8 @@ from diarizeflow.quantize import (
     benchmark_model_latency,
     compare_model_similarity,
     compute_metrics,
+    get_quantization_execution_mode,
+    is_simulated_quantization,
     quantize_fp16,
     quantize_fp8,
     quantize_int8,
@@ -44,9 +46,9 @@ def run_full_benchmark(
     precisions = [
         ("FP16", QuantPrecision.FP16, quantize_fp16, "_fp16.onnx"),
         ("INT8", QuantPrecision.INT8, quantize_int8, "_int8.onnx"),
-        ("FP8", QuantPrecision.FP8, quantize_fp8, "_fp8.onnx"),
-        ("NVFP4", QuantPrecision.NVFP4, quantize_nvfp4, "_nvfp4.onnx"),
-        ("MXFP4", QuantPrecision.MXFP4, quantize_mxfp4, "_mxfp4.onnx"),
+        ("FP8*", QuantPrecision.FP8, quantize_fp8, "_fp8.onnx"),
+        ("NVFP4*", QuantPrecision.NVFP4, quantize_nvfp4, "_nvfp4.onnx"),
+        ("MXFP4*", QuantPrecision.MXFP4, quantize_mxfp4, "_mxfp4.onnx"),
         ("W4A16", QuantPrecision.W4A16, quantize_w4a16, "_w4a16.onnx"),
     ]
 
@@ -63,7 +65,8 @@ def run_full_benchmark(
 
     for name, prec_enum, quant_fn, suffix in precisions:
         out_model = base_path.with_name(f"{base_path.stem}{suffix}")
-        print(f"\n[{name}] 檢查 / 準備量化模型: {out_model.name}...")
+        mode_str = get_quantization_execution_mode(prec_enum)
+        print(f"\n[{name}] 檢查 / 準備量化模型: {out_model.name} (執行模式: {mode_str})...")
 
         if not out_model.exists():
             print(f"    模型不存在，正在執行 {name} 量化...")
@@ -76,6 +79,8 @@ def run_full_benchmark(
         size_reduction = (1.0 - model_size_mb / base_size_mb) * 100.0
 
         print(f"    大小: {model_size_mb:.2f} MB (節省 {size_reduction:.1f}%)")
+        if is_simulated_quantization(prec_enum):
+            print("    ℹ️ 說明: 該精度為權重數值誤差模擬量化 (Weight Emulation)，輸出以浮點存儲，用於特徵保真度驗證。")
         print(f"    執行相似度比對與延遲基準測試 (runs={bench_runs})...")
 
         metrics, bench = compare_model_similarity(
@@ -90,6 +95,7 @@ def run_full_benchmark(
 
         results.append({
             "name": name,
+            "mode": mode_str,
             "size_mb": model_size_mb,
             "reduction": size_reduction,
             "spk_cos": spk_metric.cosine_similarity,
@@ -100,35 +106,40 @@ def run_full_benchmark(
         })
 
     # Print final summary table
-    print("\n\n" + "=" * 115)
+    print("\n\n" + "=" * 138)
     print("🏆 全量化精度相似度與推論速度綜合評測排行榜 (Benchmark Summary Table)")
-    print("=" * 115)
+    print("=" * 138)
     header = (
-        f"{'精度模式':<8} | {'模型容量':<9} | {'空間縮減':<8} | {'語者預測相似度':<12} | "
+        f"{'精度模式':<8} | {'執行類型':<22} | {'模型容量':<9} | {'空間縮減':<8} | {'語者預測相似度':<12} | "
         f"{'最大絕對誤差':<12} | {'平均延遲':<10} | {'加速比':<8} | {'吞吐量 (FPS)':<12} | {'精度狀態'}"
     )
     print(header)
-    print("-" * 115)
+    print("-" * 138)
 
     # First print baseline FP32
     if results:
         base_bench = results[0]["bench"]
         print(
-            f"{'FP32 (基)':<8} | {base_size_mb:>6.2f} MB | {'0.0%':<8} | {'1.000000':<14} | "
+            f"{'FP32 (基)':<8} | {'基準模型 (FP32 Baseline)':<22} | {base_size_mb:>6.2f} MB | {'0.0%':<8} | {'1.000000':<14} | "
             f"{'0.000000e+00':<12} | {base_bench.orig_mean_ms:>6.2f} ms  | {'1.00x':<8} | "
             f"{base_bench.orig_fps:>6.2f} chunks/s | 基準模型"
         )
-        print("-" * 115)
+        print("-" * 138)
 
     for r in results:
         b = r["bench"]
         print(
-            f"{r['name']:<8} | {r['size_mb']:>6.2f} MB | {r['reduction']:>5.1f}%  | "
+            f"{r['name']:<8} | {r['mode']:<22} | {r['size_mb']:>6.2f} MB | {r['reduction']:>5.1f}%  | "
             f"{r['spk_cos']:>12.6f}   | {r['spk_max_err']:<12.4e} | {b.quant_mean_ms:>6.2f} ms  | "
             f"{b.speedup:>5.2f}x   | {b.quant_fps:>6.2f} chunks/s | {r['status']}"
         )
 
-    print("=" * 115 + "\n")
+    print("=" * 138)
+    print("\n📌 基準測試透明度說明 (Benchmark Transparency Disclosure):")
+    print("  1. [實測硬體 (Native Graph Operators)]: FP16、INT8、W4A16 具備原生 ONNX 運算圖算子 (如 Float16, QLinearMatMul, MatMulNBits)。")
+    print("  2. [數值模擬 (Weight Emulation)]*: 標記 * 之精度 (FP8, NVFP4, MXFP4) 係將權重映射至目標量化格點後以浮點存儲。")
+    print("     此模式用於在部署至 Blackwell/微縮放硬體前，精確量測量化誤差 (MSE/MaxError) 與語者特徵保真度 (Cosine Sim)。")
+    print("     由於 ONNX Runtime 當前依浮點執行 MatMul，故容量與延遲反映未打包之數值模擬狀態。\n")
 
 
 def main():
