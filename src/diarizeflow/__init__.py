@@ -36,6 +36,9 @@ try:
         quantize_nvfp4,
         quantize_mxfp4,
         quantize_w4a16,
+        is_simulated_quantization,
+        is_native_quantization,
+        get_quantization_execution_mode,
     )
 except ImportError:
     pass
@@ -56,6 +59,9 @@ __all__ = [
     "quantize_nvfp4",
     "quantize_mxfp4",
     "quantize_w4a16",
+    "is_simulated_quantization",
+    "is_native_quantization",
+    "get_quantization_execution_mode",
     "auto_quantize_and_verify",
     "compare_model_similarity",
     "benchmark_model_latency",

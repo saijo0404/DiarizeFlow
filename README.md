@@ -145,6 +145,37 @@ print(f"基準 FPS: {benchmark.orig_fps:.2f} chunks/s | 量化 FPS: {benchmark.q
 
 ---
 
+### 💎 量化架構與基準測試透明度說明 (Quantization Architecture & Benchmark Transparency)
+
+DiarizeFlow 堅持軟體架構與基準測試數據的完全透明度。在模型量化與評測體系中，我們明確區分**原生硬體圖算子 (Native Graph Operators)** 與 **數值誤差模擬量化 (Weight Emulation / Fake Quantization)**：
+
+#### 1. 原生硬體加速量化 (Native Hardware Quantization)
+* **FP16 (Half Precision)**：轉換 ONNX 圖權重至 IEEE 754 半精度，利用 NVIDIA Tensor Cores (`CUDAExecutionProvider`) 實現真實硬體 2x 吞吐量加速。
+* **INT8 (Dynamic Quantization)**：生成原生 ONNX 8-bit 動態量化算子（`QuantizeLinear`、`QLinearMatMul`、`MatMulInteger`），檔案體積真實縮減 50%～70%，適用於 CPU (AVX-512 / VNNI) 與 GPU 邊緣設備。
+* **W4A16 (Weight-Only MatMulNBits)**：使用 ONNX Runtime 官方 `MatMulNBitsQuantizer`，將矩陣權重以 4 位元打包儲存，模型實質縮減約 75% 磁碟與顯存佔用，推論時透過硬體原生解包至 16 位元進行激活乘加。
+
+#### 2. 數值誤差模擬量化 (Weight Emulation / Fake Quantization)
+* **涵蓋精度**：`FP8` (E4M3FN)、`NVFP4` (NVIDIA Blackwell E2M1)、`MXFP4` (OCP Microscaling E2M1 + E8M0)。
+* **技術原理**：當前開源推論引擎（如 ONNX Runtime、CTranslate2）對最新 4-bit / 8-bit 微架構原生硬體算子的支援尚在演進中。DiarizeFlow 採用權重數值投影模擬（Fake Quantization）：依據 Blackwell 雙層縮放或 OCP 規範，將浮點權重投影至目標格點後以浮點 Initializer 存儲。
+* **核心用途**：可在一般硬體環境下精確量測各量化格式所引入之數值誤差（MSE、Max Error）及語者分離/語音辨識之特徵向量餘弦保真度（Cosine Similarity），作為前期架構選型與精度評估的重要依據。
+* **透明度規範**：因以浮點初值儲存，該模式下模型容量未作位元打包壓縮，推論仍依浮點節點執行。專案內所有評測腳本均嚴格標記 `[實測硬體 (Native)]` 與 `[數值模擬 (Weight Emulation)]*`，堅決不混淆實際硬體測速與理論模擬數據。
+
+#### 3. 透明度感知 API (Python)
+```python
+from diarizeflow import (
+    is_native_quantization,
+    is_simulated_quantization,
+    get_quantization_execution_mode,
+)
+
+# 查詢精度執行模式
+print(get_quantization_execution_mode("fp16"))   # "實測硬體 (Native Graph Operators)"
+print(get_quantization_execution_mode("nvfp4"))  # "數值模擬 (Weight Emulation / Fake Quant)"
+print(is_simulated_quantization("mxfp4"))         # True
+```
+
+---
+
 ## 📊 ONNX 模型輸入與輸出規格
 
 轉換後的 ONNX 模型對應串流語者分離核心子圖：

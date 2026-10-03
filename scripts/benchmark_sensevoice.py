@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Comprehensive benchmark script testing similarity and inference speed across all quantization precisions for SenseVoiceSmall on RTX 5090."""
 
+import argparse
 import os
 import shutil
 import sys
@@ -113,14 +114,15 @@ def quantize_sensevoice_int8(input_path: Path, output_path: Path) -> Path:
 
 
 def quantize_sensevoice_fp8(input_path: Path, output_path: Path) -> Path:
-    """Quantize SenseVoiceSmall to FP8 (E4M3FN)."""
+    """Quantize SenseVoiceSmall to FP8 (E4M3FN) via weight emulation (fake quantization)."""
     if output_path.exists():
         print(f"[*] FP8 模型已存在: {output_path}", flush=True)
         return output_path
 
     import ml_dtypes
 
-    print(f"[*] 正在將 SenseVoiceSmall 轉換為 FP8 (E4M3FN)...", flush=True)
+    print(f"[*] 正在將 SenseVoiceSmall 轉換為 FP8 (E4M3FN 數值模擬量化 / Weight Emulation)...", flush=True)
+    print("    ℹ️ 說明: 權重投影至 FP8 格點後以浮點存儲，用於特徵保真度驗證 (非原生 8-bit 硬體算子)", flush=True)
     model = onnx.load(str(input_path), load_external_data=True)
     FP8_MAX = 448.0
     count = 0
@@ -154,12 +156,13 @@ def quantize_sensevoice_fp8(input_path: Path, output_path: Path) -> Path:
 
 
 def quantize_sensevoice_nvfp4(input_path: Path, output_path: Path, block_size: int = 32) -> Path:
-    """Quantize SenseVoiceSmall to NVIDIA Blackwell NVFP4 (E2M1)."""
+    """Quantize SenseVoiceSmall to NVIDIA Blackwell NVFP4 (E2M1) via weight emulation."""
     if output_path.exists():
         print(f"[*] NVFP4 模型已存在: {output_path}", flush=True)
         return output_path
 
-    print(f"[*] 正在將 SenseVoiceSmall 轉換為 NVFP4 (Blackwell E2M1)...", flush=True)
+    print(f"[*] 正在將 SenseVoiceSmall 轉換為 NVFP4 (Blackwell E2M1 數值模擬量化 / Weight Emulation)...", flush=True)
+    print("    ℹ️ 說明: 權重投影至 NVFP4 格點後以浮點存儲，用於特徵保真度驗證 (非原生 Blackwell NVFP4 算子)", flush=True)
     import ml_dtypes
 
     model = onnx.load(str(input_path), load_external_data=True)
@@ -215,12 +218,13 @@ def quantize_sensevoice_nvfp4(input_path: Path, output_path: Path, block_size: i
 
 
 def quantize_sensevoice_mxfp4(input_path: Path, output_path: Path, block_size: int = 32) -> Path:
-    """Quantize SenseVoiceSmall to OCP Microscaling MXFP4."""
+    """Quantize SenseVoiceSmall to OCP Microscaling MXFP4 via weight emulation."""
     if output_path.exists():
         print(f"[*] MXFP4 模型已存在: {output_path}", flush=True)
         return output_path
 
-    print(f"[*] 正在將 SenseVoiceSmall 轉換為 MXFP4 (OCP Microscaling)...", flush=True)
+    print(f"[*] 正在將 SenseVoiceSmall 轉換為 MXFP4 (OCP Microscaling 數值模擬量化 / Weight Emulation)...", flush=True)
+    print("    ℹ️ 說明: 權重投影至 MXFP4 格點後以浮點存儲，用於特徵保真度驗證 (非原生 MXFP4 算子)", flush=True)
     model = onnx.load(str(input_path), load_external_data=True)
     count = 0
     total_params = 0
@@ -367,17 +371,18 @@ def main():
     print(f"    FP32 基準平均延遲: {orig_mean:.2f} ms ± {orig_std:.2f} ms ({orig_fps:.2f} chunks/sec)\n", flush=True)
 
     precision_configs = [
-        ("FP16", target_dir / "SenseVoiceSmall_fp16.onnx", quantize_sensevoice_fp16),
-        ("INT8", target_dir / "SenseVoiceSmall_int8.onnx", quantize_sensevoice_int8),
-        ("FP8", target_dir / "SenseVoiceSmall_fp8.onnx", quantize_sensevoice_fp8),
-        ("NVFP4", target_dir / "SenseVoiceSmall_nvfp4.onnx", quantize_sensevoice_nvfp4),
-        ("MXFP4", target_dir / "SenseVoiceSmall_mxfp4.onnx", quantize_sensevoice_mxfp4),
-        ("W4A16", target_dir / "SenseVoiceSmall_w4a16.onnx", quantize_sensevoice_w4a16),
+        ("FP16", "實測硬體 (Native)", target_dir / "SenseVoiceSmall_fp16.onnx", quantize_sensevoice_fp16),
+        ("INT8", "實測硬體 (Native)", target_dir / "SenseVoiceSmall_int8.onnx", quantize_sensevoice_int8),
+        ("FP8*", "數值模擬 (Weight Emulation)*", target_dir / "SenseVoiceSmall_fp8.onnx", quantize_sensevoice_fp8),
+        ("NVFP4*", "數值模擬 (Weight Emulation)*", target_dir / "SenseVoiceSmall_nvfp4.onnx", quantize_sensevoice_nvfp4),
+        ("MXFP4*", "數值模擬 (Weight Emulation)*", target_dir / "SenseVoiceSmall_mxfp4.onnx", quantize_sensevoice_mxfp4),
+        ("W4A16", "實測硬體 (Native)", target_dir / "SenseVoiceSmall_w4a16.onnx", quantize_sensevoice_w4a16),
     ]
 
     results = [
         {
             "precision": "FP32 (基)",
+            "mode": "基準模型 (FP32 Baseline)",
             "size_mb": orig_size_mb,
             "reduction_pct": 0.0,
             "cosine_sim": 1.000000,
@@ -390,9 +395,9 @@ def main():
         }
     ]
 
-    for name, model_path, quant_func in precision_configs:
+    for name, mode, model_path, quant_func in precision_configs:
         print("-" * 115, flush=True)
-        print(f"[{name}] 檢查 / 準備量化模型: {model_path.name}...", flush=True)
+        print(f"[{name}] 檢查 / 準備量化模型: {model_path.name} (執行模式: {mode})...", flush=True)
         try:
             quant_func(source_model, model_path)
             quant_size_mb = get_total_size_mb(model_path)
@@ -438,6 +443,7 @@ def main():
             results.append(
                 {
                     "precision": name,
+                    "mode": mode,
                     "size_mb": quant_size_mb,
                     "reduction_pct": reduction,
                     "cosine_sim": cos_sim,
@@ -458,16 +464,17 @@ def main():
             print(f"    [!] 評測失敗: {e}\n", flush=True)
 
     # Print Summary Table
-    print("\n" + "=" * 115, flush=True)
+    print("\n" + "=" * 138, flush=True)
     print("🏆 SenseVoiceSmall 全量化精度相似度與推論速度綜合評測排行榜 (RTX 5090)", flush=True)
-    print("=" * 115, flush=True)
+    print("=" * 138, flush=True)
     print(
-        f"{'精度模式':<10} | {'模型容量':<11} | {'空間縮減':<8} | {'輸出層相似度':<14} | {'最大絕對誤差':<14} | {'平均延遲':<10} | {'加速比':<8} | {'吞吐量 (FPS)':<14} | {'精度狀態'}"
+        f"{'精度模式':<10} | {'執行類型':<22} | {'模型容量':<11} | {'空間縮減':<8} | {'輸出層相似度':<14} | {'最大絕對誤差':<14} | {'平均延遲':<10} | {'加速比':<8} | {'吞吐量 (FPS)':<14} | {'精度狀態'}"
     )
-    print("-" * 115, flush=True)
+    print("-" * 138, flush=True)
 
     for r in results:
         prec = r["precision"]
+        mode = r["mode"]
         size_str = f"{r['size_mb']:>6.2f} MB"
         red_str = f"{r['reduction_pct']:>5.1f}%"
         cos_str = f"{r['cosine_sim']:>10.6f}"
@@ -477,13 +484,18 @@ def main():
         fps_str = f"{r['fps']:>6.2f} chunks/s"
         status = r["status"]
         print(
-            f"{prec:<10} | {size_str:<11} | {red_str:<8} | {cos_str:<14} | {err_str:<14} | {lat_str:<10} | {spd_str:<8} | {fps_str:<14} | {status}",
+            f"{prec:<10} | {mode:<22} | {size_str:<11} | {red_str:<8} | {cos_str:<14} | {err_str:<14} | {lat_str:<10} | {spd_str:<8} | {fps_str:<14} | {status}",
             flush=True,
         )
         if "FP32" in prec:
-            print("-" * 115, flush=True)
+            print("-" * 138, flush=True)
 
-    print("=" * 115 + "\n", flush=True)
+    print("=" * 138, flush=True)
+    print("\n📌 基準測試透明度說明 (Benchmark Transparency Disclosure):", flush=True)
+    print("  1. [實測硬體 (Native)]: FP16、INT8、W4A16 具備原生 ONNX 運算圖算子 (如 Float16, QLinearMatMul, MatMulNBits)。", flush=True)
+    print("  2. [數值模擬 (Weight Emulation)]*: 標記 * 之精度 (FP8, NVFP4, MXFP4) 係將權重映射至目標量化格點後以浮點存儲。", flush=True)
+    print("     此模式用於在部署至 Blackwell/微縮放硬體前，精確量測量化誤差 (MSE/MaxError) 與語音特徵保真度 (Cosine Sim)。", flush=True)
+    print("     由於 ONNX Runtime 當前依浮點執行 MatMul，故容量與延遲反映未打包之數值模擬狀態。\n", flush=True)
 
 
 if __name__ == "__main__":
