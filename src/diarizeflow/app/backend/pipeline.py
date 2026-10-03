@@ -207,15 +207,27 @@ class DiarizeFlowPipeline:
                 print(f"[!] Error in segmenter worker: {e}")
 
     def _on_diarized_utterance(
-        self, audio_segment: np.ndarray, speaker_label: str, confidence: float, duration: float
+        self,
+        audio_segment: np.ndarray,
+        speaker_label: str,
+        confidence: float,
+        duration: float,
+        is_neural_sad: Optional[bool] = None,
     ):
         """Callback from StreamingDiarizationSegmenter when a speaker's utterance completes."""
         if not self.is_running:
             return
 
+        if is_neural_sad is None:
+            is_neural_sad = (
+                getattr(self.segmenter, "last_emission_source", "neural_sad") == "neural_sad"
+            )
+
         print(f"[*] [Sortformer SAD] 檢測到講者發話 ({speaker_label}): 長度 {duration:.2f} 秒, 正在送入辨識...")
         try:
-            self._speech_queue.put_nowait((audio_segment, speaker_label, confidence, duration, time.time()))
+            self._speech_queue.put_nowait(
+                (audio_segment, speaker_label, confidence, duration, time.time(), is_neural_sad)
+            )
         except queue.Full:
             print("[!] 語音隊列已滿，丟棄片段")
 
@@ -226,7 +238,7 @@ class DiarizeFlowPipeline:
 
         print(f"[*] 檢測到音訊輸入: 長度 {duration:.2f} 秒, 正在送入分離與辨識...")
         try:
-            self._speech_queue.put_nowait((audio_segment, None, None, duration, time.time()))
+            self._speech_queue.put_nowait((audio_segment, None, None, duration, time.time(), False))
         except queue.Full:
             print("[!] 語音隊列已滿，丟棄片段")
 
@@ -237,7 +249,12 @@ class DiarizeFlowPipeline:
                 item = await asyncio.to_thread(self._speech_queue.get)
                 if not self.is_running or item is None or item[0] is None:
                     break
-                audio_segment, spk_label, conf, duration, timestamp = item
+                audio_segment = item[0]
+                spk_label = item[1]
+                conf = item[2]
+                duration = item[3]
+                timestamp = item[4]
+                is_neural_sad = item[5] if len(item) > 5 else (spk_label is not None)
             except (asyncio.CancelledError, Exception):
                 if not self.is_running:
                     break
@@ -251,9 +268,14 @@ class DiarizeFlowPipeline:
                 if seg_rms < 0.004:
                     continue
 
-                # 1. Speaker Diarization (asynchronously executed in worker thread, no duplicate inference)
+                # 1. Speaker Diarization (Single-Pass Feature Reuse)
                 t_diar_start = time.perf_counter()
-                if self.diarizer is not None:
+                if is_neural_sad and spk_label is not None:
+                    # Single-pass SAD Track Reuse: Segment was already cleanly isolated and tagged by Sortformer SAD
+                    # Bypasses duplicate Sortformer ONNX forward pass (diarize_and_split / identify_speaker)
+                    speaker_segments = [(proc_audio, spk_label, conf if conf is not None else 1.0)]
+                elif self.diarizer is not None:
+                    # Fallback path (Energy VAD or direct audio input)
                     if duration >= 2.2 and hasattr(self.diarizer, "diarize_and_split"):
                         speaker_segments = await asyncio.to_thread(
                             self.diarizer.diarize_and_split,
