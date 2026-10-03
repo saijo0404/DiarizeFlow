@@ -24,6 +24,7 @@ from PySide6.QtCore import (
     QEasingCurve,
     QPoint,
     QPropertyAnimation,
+    QRectF,
     QSize,
     Qt,
     QTimer,
@@ -34,15 +35,19 @@ from PySide6.QtCore import (
 import html
 from PySide6.QtGui import (
     QAction,
+    QBrush,
     QColor,
     QCursor,
     QFont,
     QFontMetrics,
     QIcon,
+    QKeySequence,
     QLinearGradient,
     QPainter,
     QPainterPath,
     QPen,
+    QPixmap,
+    QShortcut,
     QTextDocument,
 )
 import queue
@@ -61,6 +66,7 @@ from PySide6.QtWidgets import (
     QInputDialog,
     QLabel,
     QLineEdit,
+    QMenu,
     QMessageBox,
     QPushButton,
     QSizeGrip,
@@ -718,6 +724,7 @@ class TransparentSubtitleOverlay(QWidget):
 
         self.drag_position = QPoint()
         self.is_dragging = False
+        self.is_clickthrough = False
         self.anchor_bottom_y: Optional[int] = None
         self._cards: list[SubtitleCardWidget] = []
         self._header_speaker_label = QLabel("講者 1")
@@ -735,6 +742,8 @@ class TransparentSubtitleOverlay(QWidget):
         self.fade_timer.timeout.connect(self._start_fade_out)
 
         self._build_ui()
+        self._init_system_tray()
+        self._init_shortcuts()
         self._init_network()
         self._connect_signals()
 
@@ -890,7 +899,7 @@ class TransparentSubtitleOverlay(QWidget):
         # Click-through toggle button
         self.btn_clickthrough = QPushButton("🛡️ 穿透")
         self.btn_clickthrough.setCheckable(True)
-        self.btn_clickthrough.setToolTip("開啟/關閉滑鼠穿透（開啟後點擊會直接穿透到遊戲/視窗）")
+        self.btn_clickthrough.setToolTip("開啟/關閉滑鼠穿透（快捷鍵: Alt+Shift+H）")
         self.btn_clickthrough.setStyleSheet("""
             QPushButton {
                 background-color: #1e293b;
@@ -998,6 +1007,175 @@ class TransparentSubtitleOverlay(QWidget):
             y = geo.height() - self.height() - 60
             self.move(x, y)
             self.anchor_bottom_y = y + self.height()
+
+    def _create_app_icon(self) -> QIcon:
+        """Create a clean vector application icon for HUD window and system tray."""
+        pix = QPixmap(64, 64)
+        pix.fill(Qt.GlobalColor.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Background rounded badge
+        p.setBrush(QBrush(QColor("#0f172a")))
+        p.setPen(QPen(QColor("#38bdf8"), 2))
+        p.drawRoundedRect(QRectF(4, 4, 56, 56), 16, 16)
+
+        # Microphone capsule
+        p.setBrush(QBrush(QColor("#38bdf8")))
+        p.setPen(Qt.PenStyle.NoPen)
+        p.drawRoundedRect(QRectF(26, 15, 12, 22), 6, 6)
+
+        # Microphone arc / stand
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setPen(QPen(QColor("#38bdf8"), 2.5))
+        p.drawArc(QRectF(20, 22, 24, 22), 0, -180 * 16)
+        p.drawLine(32, 44, 32, 50)
+        p.drawLine(24, 50, 40, 50)
+
+        # Sound wave indicators
+        p.setPen(QPen(QColor("#34d399"), 2))
+        p.drawArc(QRectF(14, 18, 36, 30), 45 * 16, 90 * 16)
+        p.drawArc(QRectF(14, 18, 36, 30), -135 * 16, 90 * 16)
+
+        p.end()
+        return QIcon(pix)
+
+    def _init_system_tray(self):
+        """Initialize system tray icon and context menu."""
+        app = QApplication.instance()
+        if app:
+            app.setQuitOnLastWindowClosed(False)
+
+        self.app_icon = self._create_app_icon()
+        self.setWindowIcon(self.app_icon)
+
+        self.tray_icon = QSystemTrayIcon(self.app_icon, self)
+        self.tray_icon.setToolTip("DiarizeFlow - 即時語音辨識與翻譯")
+
+        # Tray Context Menu
+        self.tray_menu = QMenu(self)
+        self.tray_menu.setStyleSheet("""
+            QMenu {
+                background-color: #0f172a;
+                color: #e2e8f0;
+                border: 1px solid #334155;
+                border-radius: 8px;
+                padding: 6px;
+                font-family: "Microsoft JhengHei UI", "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", "Segoe UI", sans-serif;
+                font-size: 13px;
+            }
+            QMenu::item {
+                padding: 6px 24px;
+                border-radius: 4px;
+            }
+            QMenu::item:selected {
+                background-color: #1e293b;
+                color: #38bdf8;
+            }
+            QMenu::separator {
+                height: 1px;
+                background-color: #334155;
+                margin: 4px 8px;
+            }
+        """)
+
+        # Action: Toggle Click-through
+        self.action_tray_clickthrough = QAction("🛡️ 切換滑鼠穿透 (Alt+Shift+H)", self)
+        self.action_tray_clickthrough.setCheckable(True)
+        self.action_tray_clickthrough.setChecked(self.is_clickthrough)
+        self.action_tray_clickthrough.triggered.connect(lambda: self._toggle_clickthrough())
+        self.tray_menu.addAction(self.action_tray_clickthrough)
+
+        # Action: Toggle Audio Capture
+        self.action_tray_capture = QAction("▶ 開始收音", self)
+        self.action_tray_capture.triggered.connect(self._toggle_capture)
+        self.tray_menu.addAction(self.action_tray_capture)
+
+        self.tray_menu.addSeparator()
+
+        # Action: Settings
+        self.action_tray_settings = QAction("⚙ 開啟設定視窗", self)
+        self.action_tray_settings.triggered.connect(self._open_settings)
+        self.tray_menu.addAction(self.action_tray_settings)
+
+        # Action: Logs
+        self.action_tray_logs = QAction("📋 查看除錯日誌", self)
+        self.action_tray_logs.triggered.connect(self._open_log_file)
+        self.tray_menu.addAction(self.action_tray_logs)
+
+        self.tray_menu.addSeparator()
+
+        # Action: Toggle Window Visibility
+        self.action_tray_toggle_win = QAction("👁️ 顯示/隱藏 HUD 視窗", self)
+        self.action_tray_toggle_win.triggered.connect(self._toggle_window_visibility)
+        self.tray_menu.addAction(self.action_tray_toggle_win)
+
+        self.tray_menu.addSeparator()
+
+        # Action: Quit
+        self.action_tray_quit = QAction("✕ 退出 DiarizeFlow", self)
+        self.action_tray_quit.triggered.connect(self.close)
+        self.tray_menu.addAction(self.action_tray_quit)
+
+        self.tray_icon.setContextMenu(self.tray_menu)
+        self.tray_icon.activated.connect(self._on_tray_activated)
+
+        if QSystemTrayIcon.isSystemTrayAvailable():
+            self.tray_icon.show()
+
+    def _init_shortcuts(self):
+        """Initialize keyboard shortcuts for HUD interaction."""
+        self.shortcut_h = QShortcut(QKeySequence("Alt+Shift+H"), self)
+        self.shortcut_h.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.shortcut_h.activated.connect(lambda: self._toggle_clickthrough())
+
+        self.shortcut_t = QShortcut(QKeySequence("Ctrl+Shift+T"), self)
+        self.shortcut_t.setContext(Qt.ShortcutContext.ApplicationShortcut)
+        self.shortcut_t.activated.connect(lambda: self._toggle_clickthrough())
+
+        if sys.platform == "win32":
+            self._register_windows_global_hotkeys()
+
+    def _register_windows_global_hotkeys(self):
+        try:
+            import ctypes
+            user32 = ctypes.windll.user32
+            hwnd = int(self.winId())
+            MOD_ALT = 0x0001
+            MOD_CONTROL = 0x0002
+            MOD_SHIFT = 0x0004
+            MOD_NOREPEAT = 0x4000
+            user32.RegisterHotKey(hwnd, 0xDF01, MOD_ALT | MOD_SHIFT | MOD_NOREPEAT, 0x48)  # Alt+Shift+H
+            user32.RegisterHotKey(hwnd, 0xDF02, MOD_CONTROL | MOD_SHIFT | MOD_NOREPEAT, 0x54)  # Ctrl+Shift+T
+            self._registered_win32_hotkeys = True
+        except Exception as e:
+            print(f"[!] 無法註冊 Windows 全域快捷鍵: {e}")
+            self._registered_win32_hotkeys = False
+
+    def _unregister_windows_global_hotkeys(self):
+        if sys.platform == "win32" and getattr(self, "_registered_win32_hotkeys", False):
+            try:
+                import ctypes
+                user32 = ctypes.windll.user32
+                hwnd = int(self.winId())
+                user32.UnregisterHotKey(hwnd, 0xDF01)
+                user32.UnregisterHotKey(hwnd, 0xDF02)
+                self._registered_win32_hotkeys = False
+            except Exception:
+                pass
+
+    def _toggle_window_visibility(self):
+        """Toggle HUD window between visible and hidden."""
+        if self.isVisible():
+            self.hide()
+        else:
+            self.show()
+            self.raise_()
+            self.activateWindow()
+
+    def _on_tray_activated(self, reason):
+        if reason in (QSystemTrayIcon.ActivationReason.Trigger, QSystemTrayIcon.ActivationReason.DoubleClick):
+            self._toggle_window_visibility()
 
     def _init_network(self):
         """Initialize background network listeners or direct pipeline integration."""
@@ -1199,6 +1377,8 @@ class TransparentSubtitleOverlay(QWidget):
         card.rename_requested.connect(self._on_rename_requested)
 
         self._cards.append(card)
+        if getattr(self, "is_clickthrough", False):
+            card.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
         self.cards_layout.addWidget(card)
         card.show()
 
@@ -1360,6 +1540,8 @@ class TransparentSubtitleOverlay(QWidget):
             self.audio_stream.start(mic_device=use_mic, loopback_device=use_loop)
             self.is_capturing = True
             self.btn_capture.setText("⏹ 停止收音")
+            if hasattr(self, "action_tray_capture") and self.action_tray_capture:
+                self.action_tray_capture.setText("⏹ 停止收音")
             self.btn_capture.setStyleSheet("""
                 QPushButton {
                     background-color: #ef4444;
@@ -1386,6 +1568,8 @@ class TransparentSubtitleOverlay(QWidget):
             self.audio_stream = None
         self.is_capturing = False
         self.btn_capture.setText("▶ 開始收音")
+        if hasattr(self, "action_tray_capture") and self.action_tray_capture:
+            self.action_tray_capture.setText("▶ 開始收音")
         self.btn_capture.setStyleSheet("""
             QPushButton {
                 background-color: #10b981;
@@ -1410,12 +1594,92 @@ class TransparentSubtitleOverlay(QWidget):
         else:
             self.audio_chunk_signal.emit(chunk.tobytes())
 
-    def _toggle_clickthrough(self, checked: bool):
-        self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, checked)
-        if checked:
-            self.btn_clickthrough.setText("🛡️ 穿透中")
+    def _toggle_clickthrough(self, checked: Optional[bool] = None):
+        """Toggle mouse click-through mode with multi-layer safety protections."""
+        if checked is None:
+            checked = not getattr(self, "is_clickthrough", False)
+
+        self.is_clickthrough = bool(checked)
+
+        # 1. Update UI button state without signal loops
+        if hasattr(self, "btn_clickthrough") and self.btn_clickthrough:
+            if self.btn_clickthrough.isChecked() != self.is_clickthrough:
+                self.btn_clickthrough.blockSignals(True)
+                self.btn_clickthrough.setChecked(self.is_clickthrough)
+                self.btn_clickthrough.blockSignals(False)
+
+            if self.is_clickthrough:
+                self.btn_clickthrough.setText("🛡️ 穿透中")
+                self.btn_clickthrough.setToolTip("滑鼠穿透已開啟（按 Alt+Shift+H 或托盤關閉）")
+            else:
+                self.btn_clickthrough.setText("🛡️ 穿透")
+                self.btn_clickthrough.setToolTip("開啟/關閉滑鼠穿透（快捷鍵: Alt+Shift+H）")
+
+        # 2. Update Tray Menu Action state
+        if hasattr(self, "action_tray_clickthrough") and self.action_tray_clickthrough:
+            self.action_tray_clickthrough.blockSignals(True)
+            self.action_tray_clickthrough.setChecked(self.is_clickthrough)
+            self.action_tray_clickthrough.blockSignals(False)
+
+        # 3. Apply mouse transparency
+        if sys.platform == "win32":
+            # On Windows, keep window WA_TransparentForMouseEvents False so WM_NCHITTEST
+            # is processed in nativeEvent, leaving header_widget interactive!
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
         else:
-            self.btn_clickthrough.setText("🛡️ 穿透")
+            # On Linux/X11, apply transparent attribute; system tray & hotkey provide safety exit
+            self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, self.is_clickthrough)
+
+        # Subtitle cards & container
+        if hasattr(self, "subtitle_container") and self.subtitle_container:
+            self.subtitle_container.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, self.is_clickthrough)
+        if hasattr(self, "_cards"):
+            for card in self._cards:
+                card.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, self.is_clickthrough)
+        if hasattr(self, "idle_label") and self.idle_label:
+            self.idle_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, self.is_clickthrough)
+        if hasattr(self, "header_widget") and self.header_widget:
+            self.header_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
+
+        # 4. Notify user via system tray message balloon if enabled
+        if self.is_clickthrough and hasattr(self, "tray_icon") and self.tray_icon and QSystemTrayIcon.isSystemTrayAvailable():
+            try:
+                self.tray_icon.showMessage(
+                    "DiarizeFlow 懸浮字幕",
+                    "🛡️ 已開啟滑鼠穿透模式！\n隨時按 Alt+Shift+H 或右鍵點擊右下角系統托盤即可解除穿透。",
+                    QSystemTrayIcon.MessageIcon.Information,
+                    3500,
+                )
+            except Exception:
+                pass
+
+        print(f"[*] [HUD] 滑鼠穿透模式已{'開啟' if self.is_clickthrough else '關閉'} (快捷鍵: Alt+Shift+H / Ctrl+Shift+T)")
+
+    def nativeEvent(self, eventType, message):
+        if sys.platform == "win32":
+            try:
+                if eventType in (b"windows_generic_MSG", "windows_generic_MSG"):
+                    import ctypes
+                    import ctypes.wintypes
+                    msg = ctypes.wintypes.MSG.from_address(int(message))
+                    if msg.message == 0x0312:  # WM_HOTKEY
+                        if msg.wParam in (0xDF01, 0xDF02):
+                            self._toggle_clickthrough()
+                            return True, 0
+                    elif msg.message == 0x0084 and getattr(self, "is_clickthrough", False):  # WM_NCHITTEST
+                        x = ctypes.c_short(msg.lParam & 0xFFFF).value
+                        y = ctypes.c_short((msg.lParam >> 16) & 0xFFFF).value
+                        pt = self.mapFromGlobal(QPoint(x, y))
+                        if hasattr(self, "header_widget") and self.header_widget:
+                            header_rect = self.header_widget.rect()
+                            header_top_left = self.header_widget.mapTo(self, QPoint(0, 0))
+                            header_in_self = header_rect.translated(header_top_left)
+                            if not header_in_self.contains(pt):
+                                # Point is outside header bar -> return HTTRANSPARENT (-1)
+                                return True, -1
+            except Exception:
+                pass
+        return super().nativeEvent(eventType, message)
 
     def _open_settings(self):
         dlg = SettingsDialog(self.config, self)
@@ -1464,6 +1728,9 @@ class TransparentSubtitleOverlay(QWidget):
     def closeEvent(self, event):
         self.is_running = False
         self._stop_capture()
+        self._unregister_windows_global_hotkeys()
+        if hasattr(self, "tray_icon") and self.tray_icon:
+            self.tray_icon.hide()
         if self.pipeline:
             try:
                 self.pipeline.stop()
