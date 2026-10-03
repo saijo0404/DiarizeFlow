@@ -14,6 +14,130 @@ import sounddevice as sd
 import scipy.signal
 
 
+class SmartAudioRouter:
+    """Intelligent Dual-Track Audio Activity Router and Gating Engine.
+
+    Dynamically schedules and gates Microphone (Track A) and Loopback (Track B)
+    based on real-time acoustic activity and energy levels:
+    - Pure Loopback Activity: Pass system audio cleanly; gate/mute mic to prevent room bleed & noise.
+    - Pure Mic Activity: Pass mic voice cleanly; gate system noise.
+    - Cross-Talk / Overlap: Smoothly balance both streams for Sortformer multi-speaker separation.
+    - Acoustic Bleed Suppression: Distinguish speaker acoustic feedback from genuine speech.
+    - Anti-Click Cross-Fading: Linear cross-fading across chunk boundaries to prevent popping.
+    """
+
+    def __init__(
+        self,
+        routing_mode: str = "smart",  # "smart", "mix", "mic_only", "loopback_only"
+        mic_threshold: float = 0.008,
+        loopback_threshold: float = 0.008,
+        bleed_suppression: bool = True,
+        bleed_ratio: float = 0.40,
+    ):
+        self.routing_mode = routing_mode
+        self.mic_threshold = mic_threshold
+        self.loopback_threshold = loopback_threshold
+        self.bleed_suppression = bleed_suppression
+        self.bleed_ratio = bleed_ratio
+
+        # Cross-fading state tracking (initial weights 1.0 to avoid initial fade-in delay)
+        self.prev_w_mic: float = 1.0
+        self.prev_w_loop: float = 1.0
+
+        # Diagnostics & routing telemetry
+        self.last_routed_source: str = "init"  # "mic", "loopback", "both", "silence"
+        self.last_mic_rms: float = 0.0
+        self.last_loop_rms: float = 0.0
+
+    def update_config(
+        self,
+        routing_mode: Optional[str] = None,
+        mic_threshold: Optional[float] = None,
+        loopback_threshold: Optional[float] = None,
+        bleed_suppression: Optional[bool] = None,
+        bleed_ratio: Optional[float] = None,
+    ):
+        """Dynamically update routing engine parameters."""
+        if routing_mode is not None:
+            self.routing_mode = routing_mode
+        if mic_threshold is not None:
+            self.mic_threshold = mic_threshold
+        if loopback_threshold is not None:
+            self.loopback_threshold = loopback_threshold
+        if bleed_suppression is not None:
+            self.bleed_suppression = bleed_suppression
+        if bleed_ratio is not None:
+            self.bleed_ratio = bleed_ratio
+
+    def route(self, mic_chunk: np.ndarray, loop_chunk: np.ndarray) -> Tuple[np.ndarray, str]:
+        """Route and blend mic and loopback chunks, returning (routed_audio, active_source)."""
+        if self.routing_mode == "mic_only":
+            self.last_routed_source = "mic"
+            return mic_chunk, "mic"
+        if self.routing_mode == "loopback_only":
+            self.last_routed_source = "loopback"
+            return loop_chunk, "loopback"
+        if self.routing_mode == "mix":
+            self.last_routed_source = "both"
+            return np.clip(mic_chunk + loop_chunk, -1.0, 1.0), "both"
+
+        # Calculate RMS energy for both tracks
+        m_rms = float(np.sqrt(np.mean(mic_chunk ** 2) + 1e-9))
+        l_rms = float(np.sqrt(np.mean(loop_chunk ** 2) + 1e-9))
+        self.last_mic_rms = m_rms
+        self.last_loop_rms = l_rms
+
+        m_active = m_rms >= self.mic_threshold
+        l_active = l_rms >= self.loopback_threshold
+
+        # Acoustic Bleed & Echo Detection:
+        # If loopback is loud, speaker output leaking into the mic has energy proportional to loopback.
+        # If mic RMS is below bleed_ratio * loopback RMS and below strong speech threshold, suppress it.
+        if self.bleed_suppression and l_active and m_active:
+            if m_rms < l_rms * self.bleed_ratio and m_rms < 0.030:
+                m_active = False
+
+        # Determine target weights and routing state
+        if m_active and not l_active:
+            # Turn-taking: Local microphone speaking
+            target_w_mic = 1.0
+            target_w_loop = 0.0
+            source_tag = "mic"
+        elif l_active and not m_active:
+            # Turn-taking: System / remote audio speaking
+            target_w_mic = 0.0
+            target_w_loop = 1.0
+            source_tag = "loopback"
+        elif m_active and l_active:
+            # Cross-talk / simultaneous speech
+            target_w_mic = 1.0
+            target_w_loop = 1.0
+            source_tag = "both"
+        else:
+            # Silence / ambient background
+            target_w_mic = 1.0
+            target_w_loop = 1.0
+            source_tag = "silence"
+
+        # Anti-click smooth cross-fading along the chunk length
+        n_samples = len(mic_chunk)
+        if self.prev_w_mic == target_w_mic and self.prev_w_loop == target_w_loop:
+            # Fast path when weights are unchanged
+            routed = target_w_mic * mic_chunk + target_w_loop * loop_chunk
+        else:
+            ramp_mic = np.linspace(self.prev_w_mic, target_w_mic, n_samples, dtype=np.float32)
+            ramp_loop = np.linspace(self.prev_w_loop, target_w_loop, n_samples, dtype=np.float32)
+            routed = ramp_mic * mic_chunk + ramp_loop * loop_chunk
+
+        routed = np.clip(routed, -1.0, 1.0)
+
+        self.prev_w_mic = target_w_mic
+        self.prev_w_loop = target_w_loop
+        self.last_routed_source = source_tag
+
+        return routed, source_tag
+
+
 class AudioCaptureStream:
     """Manages audio streaming from microphone and/or system loopback."""
 
@@ -26,6 +150,11 @@ class AudioCaptureStream:
         stall_timeout: float = 1.0,
         max_drift_chunks: int = 4,
         max_buffer_chunks: int = 8,
+        routing_mode: str = "smart",
+        mic_activity_threshold: float = 0.008,
+        loopback_activity_threshold: float = 0.008,
+        bleed_suppression: bool = True,
+        bleed_ratio: float = 0.40,
     ):
         self.target_sr = target_sample_rate
         self.chunk_ms = chunk_ms
@@ -35,6 +164,14 @@ class AudioCaptureStream:
         self.stall_timeout = stall_timeout
         self.max_drift_samples = self.chunk_samples * max_drift_chunks
         self.max_buffer_samples = self.chunk_samples * max_buffer_chunks
+
+        self.router = SmartAudioRouter(
+            routing_mode=routing_mode,
+            mic_threshold=mic_activity_threshold,
+            loopback_threshold=loopback_activity_threshold,
+            bleed_suppression=bleed_suppression,
+            bleed_ratio=bleed_ratio,
+        )
 
         self.running = False
         self.mic_stream: Optional[sd.InputStream] = None
@@ -219,7 +356,8 @@ class AudioCaptureStream:
             if now - last_log_time >= 5.0:
                 cur_rms = max(self.current_mic_rms, self.current_loopback_rms)
                 if cur_rms > 0.004:
-                    print(f"[*] 音訊串流活躍監聽中 - 喇叭強度: {self.current_loopback_rms:.3f}, 麥克風強度: {self.current_mic_rms:.3f} (智慧 AGC 自動增益調節中)")
+                    route_tag = getattr(self.router, "last_routed_source", "none")
+                    print(f"[*] 音訊串流活躍監聽中 - 喇叭強度: {self.current_loopback_rms:.3f}, 麥克風強度: {self.current_mic_rms:.3f} 【路由: {route_tag}】 (智慧 AGC 自動增益調節中)")
                     last_log_time = now
 
             if has_mic and not has_loop:
@@ -239,19 +377,29 @@ class AudioCaptureStream:
                     buffer_loop = buffer_loop[-self.max_buffer_samples :]
 
             elif has_mic and has_loop:
-                # 1. Primary synchronous draining: mix when both streams have accumulated a full chunk
+                # 0. Clock drift compensation and sliding-window timestamp alignment:
+                # If one buffer leads the other by more than max_drift_samples, drop the oldest excess samples
+                # from the leading buffer so that the two streams remain temporally aligned in real time.
+                drift = len(buffer_mic) - len(buffer_loop)
+                if abs(drift) > self.max_drift_samples:
+                    if drift > 0:
+                        excess = drift - self.max_drift_samples
+                        buffer_mic = buffer_mic[excess:]
+                    else:
+                        excess = (-drift) - self.max_drift_samples
+                        buffer_loop = buffer_loop[excess:]
+
+                # 1. Primary synchronous draining: route when both streams have accumulated a full chunk
                 while len(buffer_mic) >= self.chunk_samples and len(buffer_loop) >= self.chunk_samples:
                     m_chunk = buffer_mic[: self.chunk_samples]
                     buffer_mic = buffer_mic[self.chunk_samples :]
                     l_chunk = buffer_loop[: self.chunk_samples]
                     buffer_loop = buffer_loop[self.chunk_samples :]
 
-                    mixed = np.clip(m_chunk + l_chunk, -1.0, 1.0)
-                    self._dispatch_chunk(mixed)
+                    routed, source = self.router.route(m_chunk, l_chunk)
+                    self._dispatch_chunk(routed)
 
                 # 2. Stall fallback / Drift compensation:
-                # If one stream has stopped producing data for > stall_timeout or buffer drift exceeds max_drift_samples,
-                # drain the active stream with zero-padding for the stalled stream to avoid freezing/latency buildup.
                 if len(buffer_mic) >= self.chunk_samples:
                     loop_stalled = (now - last_loop_time >= self.stall_timeout) or (
                         len(buffer_mic) - len(buffer_loop) >= self.max_drift_samples and len(buffer_loop) < self.chunk_samples
@@ -265,8 +413,8 @@ class AudioCaptureStream:
                                 buffer_loop = buffer_loop[self.chunk_samples :]
                             else:
                                 l_chunk = np.zeros(self.chunk_samples, dtype=np.float32)
-                            mixed = np.clip(m_chunk + l_chunk, -1.0, 1.0)
-                            self._dispatch_chunk(mixed)
+                            routed, source = self.router.route(m_chunk, l_chunk)
+                            self._dispatch_chunk(routed)
 
                 if len(buffer_loop) >= self.chunk_samples:
                     mic_stalled = (now - last_mic_time >= self.stall_timeout) or (
@@ -281,8 +429,8 @@ class AudioCaptureStream:
                                 buffer_mic = buffer_mic[self.chunk_samples :]
                             else:
                                 m_chunk = np.zeros(self.chunk_samples, dtype=np.float32)
-                            mixed = np.clip(m_chunk + l_chunk, -1.0, 1.0)
-                            self._dispatch_chunk(mixed)
+                            routed, source = self.router.route(m_chunk, l_chunk)
+                            self._dispatch_chunk(routed)
 
                 # Bound max buffer size to prevent memory leaks and unrecoverable latency lag
                 if len(buffer_mic) > self.max_buffer_samples:
@@ -297,8 +445,8 @@ class AudioCaptureStream:
                 buffer_mic = buffer_mic[self.chunk_samples :]
                 l_chunk = buffer_loop[: self.chunk_samples]
                 buffer_loop = buffer_loop[self.chunk_samples :]
-                mixed = np.clip(m_chunk + l_chunk, -1.0, 1.0)
-                self._dispatch_chunk(mixed)
+                routed, source = self.router.route(m_chunk, l_chunk)
+                self._dispatch_chunk(routed)
         elif has_mic:
             while len(buffer_mic) >= self.chunk_samples:
                 chunk = buffer_mic[: self.chunk_samples]
@@ -309,6 +457,15 @@ class AudioCaptureStream:
                 chunk = buffer_loop[: self.chunk_samples]
                 buffer_loop = buffer_loop[self.chunk_samples :]
                 self._dispatch_chunk(chunk)
+
+    @property
+    def current_route_source(self) -> str:
+        """Return latest routing source tag: 'mic', 'loopback', 'both', or 'silence'."""
+        return self.router.last_routed_source
+
+    def update_routing_config(self, **kwargs):
+        """Dynamically update router parameters."""
+        self.router.update_config(**kwargs)
 
     def _dispatch_chunk(self, chunk: np.ndarray):
         rms = float(np.sqrt(np.mean(chunk ** 2) + 1e-9))

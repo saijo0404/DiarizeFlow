@@ -10,7 +10,12 @@
     "agc_enabled": true,
     "agc_target_rms": 0.08,
     "agc_max_gain": 4.0,
-    "agc_min_gain": 0.25
+    "agc_min_gain": 0.25,
+    "routing_mode": "smart",
+    "mic_activity_threshold": 0.008,
+    "loopback_activity_threshold": 0.008,
+    "bleed_suppression": true,
+    "bleed_ratio": 0.40
   },
   "vad": {
     "enabled": true,

@@ -213,6 +213,18 @@ class SettingsDialog(QDialog):
         self.agc_check.setToolTip("自動放大過小聲音、壓限過大聲音，確保 ASR 語音特徵處於最佳動態範圍")
         form.addRow("音量動態調節:", self.agc_check)
 
+        # Dual-track audio routing mode
+        self.routing_combo = QComboBox()
+        self.routing_combo.addItem("智慧活動動態分流 (抗迴音/無失真, 推薦)", "smart")
+        self.routing_combo.addItem("傳統相加混音 (Legacy Additive Mix)", "mix")
+        self.routing_combo.addItem("僅收本機麥克風", "mic_only")
+        self.routing_combo.addItem("僅收電腦系統聲音", "loopback_only")
+        cur_routing = getattr(self.config.audio, "routing_mode", "smart")
+        idx = self.routing_combo.findData(cur_routing)
+        if idx >= 0:
+            self.routing_combo.setCurrentIndex(idx)
+        form.addRow("雙軌音訊路由模式:", self.routing_combo)
+
         # 2. ASR Engine & Faster-Whisper Configuration
         self.asr_combo = QComboBox()
         self.asr_combo.addItem("SenseVoiceSmall (超低延遲 60~80ms)", "sensevoice")
@@ -458,6 +470,7 @@ class SettingsDialog(QDialog):
         self.config.audio.mic_device = self.mic_combo.currentData()
         self.config.audio.loopback_device = self.loopback_combo.currentData()
         self.config.audio.agc_enabled = self.agc_check.isChecked()
+        self.config.audio.routing_mode = self.routing_combo.currentData()
         self.config.asr.engine = self.asr_combo.currentData()
         self.config.asr.whisper_model = self.whisper_model_edit.text().strip()
         self.config.asr.whisper_precision = self.prec_combo.currentText()
@@ -1597,11 +1610,22 @@ class TransparentSubtitleOverlay(QWidget):
 
         print(f"[*] 啟動音訊監聽: 麥克風={use_mic}, 系統聲音(Loopback)={use_loop}")
         try:
+            routing_mode = getattr(self.config.audio, "routing_mode", "smart")
+            mic_thresh = getattr(self.config.audio, "mic_activity_threshold", 0.008)
+            loop_thresh = getattr(self.config.audio, "loopback_activity_threshold", 0.008)
+            bleed_supp = getattr(self.config.audio, "bleed_suppression", True)
+            bleed_ratio = getattr(self.config.audio, "bleed_ratio", 0.40)
+
             self.audio_stream = AudioCaptureStream(
                 target_sample_rate=self.config.audio.sample_rate,
                 chunk_ms=self.config.audio.chunk_ms,
                 gain=self.config.audio.gain,
                 on_audio_chunk=self._on_audio_chunk,
+                routing_mode=routing_mode,
+                mic_activity_threshold=mic_thresh,
+                loopback_activity_threshold=loop_thresh,
+                bleed_suppression=bleed_supp,
+                bleed_ratio=bleed_ratio,
             )
             self.audio_stream.start(mic_device=use_mic, loopback_device=use_loop)
             self.is_capturing = True
