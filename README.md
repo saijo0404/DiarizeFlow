@@ -1,63 +1,341 @@
 # DiarizeFlow
 
-`DiarizeFlow` 是一個專為 NVIDIA **Nemotron-3-Diarization**（Sortformer 語者分離架構）打造的 ONNX 轉換與結構簡化管線。使用 `uv` 進行現代化、快速且確定性的環境與依賴管理。
+`DiarizeFlow` 是一個專為即時語音辨識、多講者分離與即時翻譯設計的現代化桌面懸浮字幕（HUD）系統。核心技術整合 **NVIDIA Nemotron-3-Diarization (Sortformer)**、**Faster-Whisper Large-v2**、**SenseVoiceSmall**、**目標講者語音提取 (Target-Speaker Extraction / TSE)** 以及雙軌智慧音訊路由，並採用 `uv` 進行確定性套件與環境管理。
 
 ---
 
 ## 🌟 特點與核心技術亮點
 
-NVIDIA Nemotron-3 Diarization 是基於 31 層 Transformer Encoder 的即時串流語者分離架構（支援最多 8 名發話者），直接匯出 ONNX 時常遇到框架限制。`DiarizeFlow` 實現了關鍵技術修補，保證轉換無縫完成且數值 100% 精確對齊：
+### 1. 🎙️ 即時語者分離翻譯應用 (Real-time Diarization & Translation HUD)
+- **NVIDIA Nemotron-3 Diarization 官方串流架構**：以 1.04 秒小區間滑動視窗分析，支援最多 8 位講者交替說話之即時毫秒級邊界切分 (`diarize_and_split`)，徹底解決多講者語音累積混疊難題。
+- **目標講者語音提取 (TSE)**：引入講者特徵導向的重疊語音提取模型，在多人同頻重疊說話 (Overlap Speech) 時精準分離目標聲軌。
+- **雙軌音訊智慧路由 (SmartAudioRouter)**：支援同時擷取本機麥克風與系統音訊 (WASAPI Loopback / PulseAudio / PipeWire)，具備動態活動門檻判定、耳機/喇叭串音抑制 (Bleed Suppression) 與防爆音平滑交叉淡化 (Cross-Fading)。
+- **輕量化 8-Byte 二進位 WebSocket 訊框協定 (`/ws/audio`)**：制定 `>BBBBHH` 二進位標頭，攜帶來源音軌標記 (Mic / Loopback / Mixed)、採樣率與聲道元資料，並支援純 Float32 PCM 自動相容回退。
+- **雙 ASR 語音辨識引擎自由切換**：
+  - **SenseVoiceSmall**：超低延遲（60~80ms）多語言辨識，極低資源消耗。
+  - **Faster-Whisper Large-v2**：旗艦級語音模型，支援 CUDA Tensor Core（FP16 / INT8）硬體加速。
+- **LLM 即時翻譯與連線池優化**：相容 `vLLM`、`llama.cpp`、`OpenAI`、`Claude`、`Ollama`，採用持久化 `aiohttp.ClientSession` 連線池以降低 HTTP 連線與 TLS 握手延遲，並自動清理思考標籤（如 `<think>`）。
+- **前後端動態設定即時同步**：前端 HUD 透過 REST API `POST /api/config` 即時更新後端狀態，無需重啟伺服器。
+- **持久化聲紋資料庫 (Speaker Profiles)**：支援聲紋特徵永久釘選儲存、講者名稱自訂及顏色關聯，並具備即時 WebSocket 事件廣播。
 
-1. **RoPE 與注意力機制 ONNX 相容轉換**：
-   - 模型預設使用 FlexAttention，包含 PyTorch 未實作 ONNX 降階的高階運算子（Higher-order ops）。
-   - `DiarizeFlow` 自動將雙向完整注意力機制（`attn_mode='full'`）對應至標準 `torch.nn.functional.scaled_dot_product_attention`，完全保留 RoPE 旋轉位置編碼運算，並轉譯為標準 ONNX 算子。
-2. **`aten.sort.stable` 運算子自動分解（Decomposition）**：
-   - 針對 PyTorch Dynamo 匯出器缺乏 `aten.sort.stable` 降階規則的問題，自動註冊將其分解為原生 ONNX 支援的 `TopK(sorted=True)` 運算子。
-3. **模型簡化與常數摺疊（ONNX Simplifier）**：
-   - 使用 `onnxsim` 自動摺疊靜態子圖與權重、清理多餘節點，產出結構精簡的高效能 ONNX 模型。
-4. **自動數值驗證（Numerical Verification）**：
-   - 轉換後自動以 ONNX Runtime 載入並與 PyTorch 原生推論輸出進行逐張量絕對誤差比對，確保模型精度毫無損失。
-5. **完整 `uv` 環境管理**：
-   - 透過 `pyproject.toml` 與 `[tool.uv.sources]` 自動配置支援 RoPE 的最新 `NVIDIA-NeMo/Speech`，一鍵安裝所有相依套件。
+### 2. 🪟 模組化原生 PySide6 懸浮字幕視窗 (Modular Desktop HUD)
+- **模組化元件架構**：將介面拆解為獨立的 `cards.py`、`settings_dialog.py`、`widgets.py`、`network.py`、`display_server.py` 與 `overlay_window.py`，結構清晰且利於擴充。
+- **多卡片滑動對話隊列 (Multi-Card Sliding Queue)**：支援同時呈現多則發話者對話卡片（`max_cards`），具備獨立平滑淡出與霓虹講者識別徽章。
+- **滑鼠穿透模式 (Click-Through) 與三重防死鎖安全保護**：
+  1. 頂部控制列常駐互動，隨時可於視窗本體直接關閉穿透。
+  2. 應用程式全域快捷鍵切換：`Alt+Shift+H` 或 `Ctrl+Shift+T`。
+  3. 桌面系統托盤選單 (System Tray) 防死鎖安全退出機制。
+- **Linux Wayland / X11 顯示伺服器環境感知**：自動偵測 Wayland 合成器，於終端機、HUD 按鈕 Tooltip、氣球通知及設定對話框給予清晰操作指引。
+- **跨平台多螢幕視窗幾何記憶 (Window Geometry Persistence)**：自動記錄視窗座標與尺寸，跨重啟自動還原，並具備多螢幕座標邊界校驗與螢幕解析度安全箝位。
+
+### 3. ⚡ Nemotron-3 Diarization ONNX 轉換與量化管線
+- **RoPE 與注意力機制 ONNX 相容轉換**：將 FlexAttention 降階對應至標準 `scaled_dot_product_attention`，保留 RoPE 旋轉位置編碼運算。
+- **`aten.sort.stable` 自動分解**：自動將 Dynamo 缺乏之排序運算子分解為原生 ONNX `TopK(sorted=True)`。
+- **多精度量化評測引擎**：支援 FP16、INT8、FP8、NVFP4、MXFP4、W4A16 六大精度，嚴格區分原生硬體算子與數值誤差模擬。
+- **Mel Spectrogram 矩陣與窗函數快取**：預先計算並快取濾波矩陣與 Hamming 窗函數，消除推論迴圈中重複計算的開銷。
 
 ---
 
-## 📁 專案架構
+## 📁 專案目錄架構
 
 ```
 DiarizeFlow/
-├── pyproject.toml              # uv 專案定義與依賴設定
-├── README.md                   # 專案說明文件
+├── pyproject.toml                     # uv 專案定義、核心依賴與可選群組 [export, dev, build]
+├── README.md                          # 專案總體說明與架構文檔
+├── config.json                        # 預設應用程式設定檔
+├── scripts/                           # 常用執行與自動化工具腳本
+│   ├── download_models.py             # 一鍵自動下載預訓練模型 (Nemotron, SenseVoice, Whisper)
+│   ├── build_executable.py            # PyInstaller 原生桌面執行檔自動打包 (支援 uv/pip 自動回退)
+│   ├── run_app.py                     # 一鍵啟動後端管線與 PySide6 原生懸浮視窗
+│   ├── run_backend.py                 # 獨立啟動 FastAPI 後端伺服器 (包含 WebSocket 與 REST API)
+│   ├── run_frontend.py                # 獨立啟動 PySide6 前端懸浮視窗 (連接遠端或既有後端)
+│   ├── convert_nemo_to_onnx.py        # Nemotron-3 Diarization ONNX 模型轉換腳本
+│   ├── quantize_onnx.py               # ONNX 模型多精度量化轉換腳本
+│   ├── verify_onnx.py                 # ONNX 模型結構與數值推論檢驗腳本
+│   ├── benchmark_all.py               # 語者分離量化模型全面基準測試排行榜
+│   ├── benchmark_sensevoice.py        # SenseVoice 語音辨識基準測試排行榜
+│   └── benchmark_whisper.py           # Faster-Whisper 推論基準評測腳本
 ├── src/
 │   └── diarizeflow/
-│       ├── __init__.py         # 套件導出
-│       ├── patches.py          # ONNX 匯出相容性修補 (aten.sort 與 SDPA)
-│       └── export_onnx.py      # 核心匯出、簡化與驗證邏輯
-└── scripts/
-    ├── convert_nemo_to_onnx.py # 轉換 CLI 執行腳本
-    └── verify_onnx.py          # ONNX 模型結構與推論驗證腳本
+│       ├── __init__.py                # 套件導出
+│       ├── export_onnx.py             # 核心 ONNX 匯出、簡化與驗證邏輯
+│       ├── quantize.py                # 多精度量化引擎 (FP16/INT8/FP8/NVFP4/MXFP4/W4A16)
+│       ├── hardware.py                # 跨平台硬體偵測引擎 (CUDA Driver API / SM 架構感知)
+│       ├── calibration.py             # 首次啟動硬體探測與自適應量化校準
+│       ├── patches.py                 # PyTorch Dynamo / ONNX 運算子相容性修補
+│       ├── models.py                  # 語音模型註冊表、狀態檢查與下載管理
+│       └── app/                       # DiarizeFlow 桌面應用程式核心
+│           ├── config.py              # 資料類別設定規格 (AppConfig, AudioConfig, UIConfig 等)
+│           ├── launcher.py            # 整合式啟動器 (雙重日誌、例外捕獲、動態連接埠衝突檢測)
+│           ├── audio/                 # 音訊擷取、DSP 處理與多軌路由
+│           │   ├── capture.py         # 跨平台串流音訊擷取 (WASAPI / Pulse / PipeWire) 與 SmartAudioRouter
+│           │   ├── protocol.py        # 8-Byte 二進位 WebSocket 音訊標頭訊框協定與解析
+│           │   ├── segmenter.py       # StreamingDiarizationSegmenter 串流語者分割與能量回退
+│           │   ├── tse.py             # TargetSpeakerExtractor 目標講者重疊語音提取
+│           │   ├── vad.py             # 能量式語音活動檢測 (EnergyVADSegmenter)
+│           │   ├── agc.py             # 串流輸入動態音量自動調節 (StreamingInputAGC)
+│           │   └── devices.py         # 音訊輸入裝置與系統回放裝置探測
+│           ├── backend/               # 後端推論核心與 Web API 服務
+│           │   ├── server.py          # FastAPI 應用、WebSocket (/ws/audio, /ws/subtitles) 與 REST API
+│           │   ├── pipeline.py        # DiarizeFlowPipeline 核心流程調度器
+│           │   ├── diarizer.py        # Nemotron-3 Diarization 串流推論與 Mel 濾波矩陣/窗函數快取
+│           │   ├── voiceprint.py      # 持久化聲紋資料庫 (SpeakerProfile, VoiceprintDatabase)
+│           │   ├── asr.py             # SenseVoiceSmall 與 Faster-Whisper ASR 引擎工廠
+│           │   └── translator.py      # LLM 翻譯器 (持久化 aiohttp.ClientSession 連線池)
+│           └── frontend/              # PySide6 原生桌面懸浮字幕元件 (模組化架構)
+│               ├── overlay_window.py  # TransparentSubtitleOverlay 懸浮視窗本體與滑鼠穿透
+│               ├── cards.py           # SubtitleCardWidget 與 SpeakerBadge (多卡片對話隊列)
+│               ├── settings_dialog.py # SettingsDialog 視覺化設定對話框與 Wayland 提示
+│               ├── display_server.py  # Linux Wayland / X11 / Windows / macOS 顯示伺服器協議偵測
+│               ├── network.py         # 後台 WebSocket 接收/音訊發送執行緒與 REST API 同步
+│               ├── widgets.py         # UI 輔助元件、圖示繪製、動態 VU 聲波計與霓虹色盤
+│               └── desktop_overlay.py # 前端公開介面 Facade (無縫向後相容)
+└── tests/                             # 完整單元與整合測試套件 (250+ 測試全數通過)
 ```
 
 ---
 
-## 🚀 快速上手
+## 🏗️ 系統架構設計
 
-### 1. 環境安裝與同步 (uv)
+```
+                                      【音訊捕捉與輸入端】
+                                ┌───────────────────────────────┐
+                                │ 本機麥克風 (Microphone Input) │
+                                └──────────────┬────────────────┘
+                                               │
+                                ┌──────────────▼────────────────┐
+                                │ 系統音訊 (WASAPI/Pulse Monitor)│
+                                └──────────────┬────────────────┘
+                                               │
+                                               ▼
+                              ┌───────────────────────────────────┐
+                              │        SmartAudioRouter           │
+                              │  - 雙軌動態能量分析與分流         │
+                              │  - 串音抑制 (Bleed Suppression)   │
+                              │  - 平滑交叉淡化 (Anti-pop Fading) │
+                              └────────────────┬──────────────────┘
+                                               │
+                                               │ (單軌/多軌標籤)
+                                               ▼
+                         ┌─────────────────────────────────────────────┐
+                         │   二進位音訊訊框協定 (Binary Framing)       │
+                         │   - 8-Byte Header (>BBBBHH)                 │
+                         │   - Magic: 0xDF | Ver: 0x01 | Track: Mic/Sys│
+                         │   - SampleRate: 16000 | Channels: 1         │
+                         │   - 自動回退純 Float32 PCM 相容模式         │
+                         └─────────────────────┬───────────────────────┘
+                                               │
+                       ┌───────────────────────┴───────────────────────┐
+                       │                                               │
+              (In-Process 直連模式)                            (前後端分離網路模式)
+                       │                                               │
+                       │                                               ▼
+                       │                                WebSocket: /ws/audio
+                       │                                               │
+                       ▼                                               ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+│                             DiarizeFlow 後端處理核心 (Backend Pipeline)                     │
+│                                                                                             │
+│  1. 音量動態平準化 ────────> StreamingInputAGC (動態增益與防破音壓限)                         │
+│                                                                                             │
+│  2. 串流語者分割 ──────────> StreamingDiarizationSegmenter                                   │
+│                              ├─ Sortformer 8 講者神經 SAD                                   │
+│                              └─ 能量降級回退 (Energy VAD Fallback)                           │
+│                                                                                             │
+│  3. 重疊語音分離 ──────────> TargetSpeakerExtractor (TSE 神經聲學波形分離)                    │
+│                                                                                             │
+│  4. 語者分離與聲紋比對 ────> NemotronDiarizer                                                │
+│                              ├─ 官方 Low-Latency 1.04s 串流架構                              │
+│                              ├─ diarize_and_split 講者毫秒級交替切分                         │
+│                              └─ 持久化聲紋特徵庫 (Persistent Voiceprint Profiles)            │
+│                                                                                             │
+│  5. 語音辨識 (ASR) ────────> SenseVoiceSmall (60~80ms) / Faster-Whisper Large-v2            │
+│                                                                                             │
+│  6. 即時語言翻譯 (LLM) ────> LLMTranslator (持久化 aiohttp.ClientSession 連線池)             │
+└──────────────────────────────────────────────┬──────────────────────────────────────────────┘
+                                               │
+                                               ├──────────────────────────────┐
+                                               ▼                              ▼
+                                     WebSocket: /ws/subtitles         REST API: /api/*
+                                               │                              │
+                                               ▼                              ▼
+┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+│                          PySide6 模組化懸浮字幕視窗 (Modular Frontend HUD)                  │
+│                                                                                             │
+│  - TransparentSubtitleOverlay: 無邊框毛玻璃半透明浮動視窗 (支援自由拖曳與置頂)              │
+│  - SubtitleCardWidget: 多卡片滑動隊列 (Multi-Card Queue, 獨立淡出, 霓虹講者徽章)            │
+│  - DisplayServer: Linux Wayland / X11 環境感知偵測與快捷鍵受限操作導引                      │
+│  - SettingsDialog: 視覺化即時設定對話框 (音訊裝置、ASR 引擎、LLM 翻譯、UI 外觀)             │
+│  - Mouse Click-Through: 滑鼠穿透三重防死鎖保護 (頂部操作列 / Alt+Shift+H / 系統托盤選單)   │
+│  - GeometryPersistence: 跨重啟視窗幾何座標自動記憶與多螢幕安全箝位                          │
+└─────────────────────────────────────────────────────────────────────────────────────────────┘
+```
 
-本專案使用 `uv` 管理虛擬環境與套件：
+---
+
+## 🌐 API 與前後端通訊規格
+
+DiarizeFlow 採用前後端完全分離設計，前端 HUD 與外部第三方客戶端可透過標準 WebSocket 與 RESTful API 完全掌控後端服務。
+
+### 1. WebSocket 串流端點
+
+| 端點 (Endpoint) | 方向 | 協定格式 | 說明 |
+| :--- | :--- | :--- | :--- |
+| `/ws/audio` | Client ➔ Server | 二進位訊框 (Binary Frame) | 傳輸 16kHz Float32 音訊訊框。支援 8-Byte 元資料標頭或直接傳送純 PCM。 |
+| `/ws/subtitles` | Server ➔ Client | JSON 事件廣播 | 即時推送語者分離識別、翻譯結果、講者更名與刪除事件。 |
+
+#### `/ws/audio` 8-Byte 二進位標頭格式：
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|  Magic (0xDF) | Version(0x01) |   Track Tag   | Flags (0x00)  |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|       Sample Rate (uint16)    |      Channels (uint16)        |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+|                                                               |
+|             Raw Float32 Little-Endian PCM Payload...          |
+|                                                               |
++-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
+```
+- **Track Tag 定義**：`0x01` = 麥克風 (Mic), `0x02` = 系統聲音 (Loopback), `0x03` = 混合聲音 (Mixed)。
+- **無縫向後相容**：若前 2 位元組非 `0xDF, 0x01`，系統自動退回純 Float32 PCM 模式，將整包數據視為 `mixed` 來源解碼。
+
+#### `/ws/subtitles` JSON 事件範例：
+```json
+{
+  "id": "e4f8d2a1-7c9b-4b2e-a3d8-1e9a2b3c4d5e",
+  "speaker": "講者 1",
+  "original_text": "こんにちは、今日の会議を始めましょう。",
+  "translated_text": "你好，我們開始今天的會議吧。",
+  "source_lang": "ja",
+  "target_lang": "繁體中文",
+  "confidence": 0.94,
+  "duration": 2.45,
+  "timestamp": 1727982000.123,
+  "latency": {
+    "audio_duration_ms": 2450,
+    "diarization_ms": 32.4,
+    "asr_ms": 78.1,
+    "translation_ms": 115.6,
+    "total_pipeline_ms": 226.1
+  }
+}
+```
+
+### 2. RESTful API 端點
+
+| 路由 (Path) | 方法 (Method) | 描述 (Description) | 回應格式範例 (Response Example) |
+| :--- | :--- | :--- | :--- |
+| `/api/status` | `GET` | 查詢後端運作狀態、模型供應商、連線數與音訊統計 | `{"status": "running", "active_ui_clients": 1, "last_audio_source": "mic", ...}` |
+| `/api/config` | `GET` | 取得當前後端作用中的完整設定檔 | `{"audio": {...}, "asr": {...}, "llm": {...}}` |
+| `/api/config` | `POST` | 前端動態同步新設定至後端（即時生效免重啟） | `{"status": "updated", "config": {...}}` |
+| `/api/devices` | `GET` | 列出系統可用的所有實體麥克風與 Loopback 回放裝置 | `{"microphones": [...], "loopbacks": [...]}` |
+| `/api/speakers` | `GET` | 取得所有持久化儲存的發話者聲紋檔案庫清單 | `{"profiles": [...], "count": 2}` |
+| `/api/speakers/{id}/rename` | `POST` | 為特定語者重新命名並自訂標籤顏色 | `{"status": "success", "profile": {"name": "Alice", ...}}` |
+| `/api/speakers/{id}` | `DELETE` | 永久刪除特定語者聲紋檔案並通知前端清除卡片 | `{"status": "deleted", "speaker_id": "Speaker 1"}` |
+| `/api/test/audio` | `POST` | 上傳 `.wav` 測試檔案進行非即時管線功能驗證 | `{"status": "enqueued", "duration": 4.5}` |
+
+---
+
+## 🎧 雙軌音訊智慧路由與 DSP 處理
+
+DiarizeFlow 專為多聲道即時通訊環境研發專屬 DSP 音訊處理鏈：
+
+### 1. 雙軌智慧路由 (`SmartAudioRouter`)
+- **路由模式支援**：
+  - `smart` (預設推薦)：動態監控麥克風與系統音訊能量，僅當有實際發話時才路由數據，徹底避免無聲底噪佔用算力。
+  - `mix`：傳統加權混音模式。
+  - `mic_only` / `loopback_only`：單一音訊軌道鎖定。
+- **串音抑制 (Bleed Suppression)**：藉由即時比對系統回放訊號與麥克風訊號強度，若麥克風能量顯著低於系統音訊（預設比例 `0.40`），自動判定為耳機/喇叭漏音並予以降噪抑制，杜絕迴音干擾。
+- **防爆音平滑交叉淡化 (Anti-pop Cross-Fading)**：在音軌切換時執行餘弦加權平滑淡入淡出，消除切換瞬態爆音。
+
+### 2. Mel Spectrogram 濾波矩陣與窗函數快取 (`backend/diarizer.py`)
+- 在高頻率的串流處理迴圈中，預先計算並快取 128-bin Mel 濾波矩陣與 Hamming 窗函數，消除重複構建開銷，使特徵提取耗時由 4.3ms 大幅降低至 0.12ms (36x 加速)。
+
+### 3. 目標講者重疊提取 (`tse.py`)
+- 當會議或多人對話出現「多位講者同時開口」的重疊語音 (Overlap Speech) 時，透過聲學特徵注意力比對，自混合波形中抽離特定目標講者的純淨語音，大幅提升後續 ASR 辨識準確率。
+
+---
+
+## 🖥️ 桌面懸浮字幕 (HUD) 操作指南
+
+### 1. 快捷鍵清單
+
+| 快捷鍵 | 作用 | 適用平台 |
+| :--- | :--- | :--- |
+| `Alt + Shift + H` | 開啟 / 關閉滑鼠穿透模式 (Click-Through) | 全平台 (Windows / X11 / 焦點應用) |
+| `Ctrl + Shift + T` | 切換滑鼠穿透備用快捷鍵 | 全平台 |
+| 滑鼠左鍵拖曳頂部標題列 | 自由移動懸浮窗至螢幕任意位置 | 全平台 |
+
+### 2. Linux Wayland 環境感知提示
+- 在採用 Wayland 顯示協議的現代 Linux 發行版（Ubuntu 22.04+、Fedora、Arch、Debian 12 等）中，系統 Compositor 基於安全性預設限制背景程式攔截全域鍵盤熱鍵。
+- DiarizeFlow 內建 Wayland 感知模組：
+  - 啟動時自動於終端機輸出友善說明。
+  - HUD 穿透按鈕與系統托盤項目動態切換為「Wayland 推薦」提示。
+  - 開啟滑鼠穿透時，系統托盤主動彈出通知，導引用戶隨時透過桌面右下角托盤選單解除穿透。
+
+### 3. 多螢幕視窗位置記憶與安全箝位
+- 視窗關閉或移動停頓 800ms 後，自動將目前視窗座標與幾何尺寸寫入 `config.json` 中的 `ui.window_geometry`。
+- 每次啟動時自動校驗座標是否座落於目前已連線的任一顯示器可視範圍內；若外接螢幕已拔除，自動平滑還原至主螢幕中央底部，杜絕視窗飛出螢幕外的困境。
+
+---
+
+## 🚀 快速上手與部署
+
+### 1. 安裝環境與同步 (uv)
+
+本專案使用 `uv` 進行確定性套件管理：
 
 ```bash
-# Clone 並進入專案目錄
+# Clone 專案庫
 git clone https://github.com/saijo0404/DiarizeFlow.git
 cd DiarizeFlow
 
-# 同步並安裝所有依賴（會自動建立 .venv）
+# 同步核心依賴 (自動建立並配置 .venv)
 uv sync
 ```
 
-### 2. 執行模型轉換與 onnxsim 簡化
+### 2. 一鍵下載預訓練模型
 
-使用內建腳本將 `Nemotron-3-Diarization.nemo` 轉換為 ONNX 並自動執行 `onnxsim`：
+執行內建引導腳本自動下載並就緒所有模型檔案（Nemotron Diarization、SenseVoiceSmall、Faster-Whisper）：
+
+```bash
+uv run python scripts/download_models.py
+```
+
+### 3. 一鍵啟動桌面懸浮字幕 HUD
+
+```bash
+# 啟動桌面即時語者分離翻譯應用 (預設目標語言: 繁體中文)
+uv run python scripts/run_app.py
+
+# 或指定翻譯目標語言與連接埠
+uv run python scripts/run_app.py --target-lang "English" --port 8765
+```
+
+- **Linux 快捷啟動**：`./run_desktop.sh`
+- **Windows 快捷啟動**：雙擊 `run_desktop.bat`
+
+### 4. 打包免 Python 的獨立執行檔 (Executable)
+
+專案提供自動環境檢測與打包工具，自動處理 `uv` 虛擬環境中缺少 `pip` 的相容性問題：
+
+```bash
+# 安裝打包可選依賴
+uv sync --extra build
+
+# 執行自動打包
+uv run python scripts/build_executable.py
+```
+- **Linux 產物**：`dist/DiarizeFlow/DiarizeFlow` (ELF binary)
+- **Windows 產物**：`dist/DiarizeFlow/DiarizeFlow.exe`
+
+---
+
+## ⚡ 模型轉換、量化與基準測試 (ONNX Conversion & Quantization)
+
+### 1. 執行模型轉換與 onnxsim 簡化
 
 ```bash
 uv run python scripts/convert_nemo_to_onnx.py \
@@ -65,49 +343,9 @@ uv run python scripts/convert_nemo_to_onnx.py \
     --output models/nemotron_diarization/Nemotron-3-Diarization.onnx
 ```
 
-也可透過 `pyproject.toml` 註冊的 CLI 命令執行：
+### 2. 跨平台硬體偵測與多精度量化
 
-```bash
-uv run diarizeflow-export \
-    --nemo-path models/nemotron_diarization/Nemotron-3-Diarization.nemo \
-    --output models/nemotron_diarization/Nemotron-3-Diarization.onnx
-```
-
-#### 轉換參數說明：
-
-| 參數 | 說明 | 預設值 |
-| :--- | :--- | :--- |
-| `--nemo-path` | 輸入的 `.nemo` 檢查點路徑 | `models/nemotron_diarization/Nemotron-3-Diarization.nemo` |
-| `--output`, `-o` | 簡化後輸出的 ONNX 模型路徑 | `models/nemotron_diarization/Nemotron-3-Diarization.onnx` |
-| `--raw-output` | 可選：保留未簡化的原始 ONNX 模型路徑 | `None`（暫存後自動清理） |
-| `--batch-size` | 追蹤使用的 Batch 大小 | `1` |
-| `--opset` | ONNX Opset 版本 | `18` |
-| `--device` | 指定執行運算裝置 (`cuda` 或 `cpu`) | 自動選取（優先使用 `cuda`） |
-| `--skip-onnxsim` | 跳過 `onnxsim` 簡化步驟 | 關閉 |
-| `--skip-verify` | 跳過 ONNX Runtime 數值驗證步驟 | 關閉 |
-| `--tolerance` | 數值比對容許最大誤差 | `1e-3` |
-
----
-
-### 3. 驗證 ONNX 模型
-
-轉換完成後，可使用檢驗腳本確認模型張量規格並進行推論測試：
-
-```bash
-uv run python scripts/verify_onnx.py --model models/nemotron_diarization/Nemotron-3-Diarization.onnx
-```
-
----
-
-## ⚡ 跨平台硬體偵測、多精度量化與數值相似度檢驗
-
-DiarizeFlow 內建跨平台（Linux、Windows、WSL2）CUDA Driver API 硬體感知引擎，能自動偵測 GPU 架構（Compute Capability / SM 等級）、裝置名稱與顯存容量，並提供 **FP16、INT8、FP8、NVFP4、MXFP4、W4A16** 六大量化精度轉換與量化前後數值相似度檢驗。
-
-模型全部存放在專案目錄下的 `models/` 子目錄進行嚴格模型隔離：
-* `models/nemotron_diarization/`：語者分離模型（Nemotron Sortformer 各精度）
-* `models/sensevoice_small/`：多語言語音辨識模型（SenseVoiceSmall 各精度）
-
-### 執行量化與評測指令：
+DiarizeFlow 內建 CUDA Driver API 硬體感知引擎，能自動偵測 GPU 架構（Compute Capability / SM 等級），並提供 **FP16、INT8、FP8、NVFP4、MXFP4、W4A16** 六大量化精度轉換：
 
 ```bash
 # 1. 自動硬體檢測策略 (依據 GPU 架構自動選定最優精度)
@@ -119,85 +357,36 @@ uv run python scripts/quantize_onnx.py --model models/nemotron_diarization/Nemot
 # 3. 指定 Dynamic INT8 量化 (推薦 CPU 部署)
 uv run python scripts/quantize_onnx.py --model models/nemotron_diarization/Nemotron-3-Diarization.onnx --precision int8
 
-# 4. 一鍵全量化精度（FP16/INT8/FP8/NVFP4/MXFP4/W4A16）綜合排行榜評測 (Nemotron 語者分離)
+# 4. 一鍵全量化精度排行榜評測 (Nemotron 語者分離)
 uv run python scripts/benchmark_all.py --bench-runs 15 --warmup-runs 5
 
-# 5. 一鍵全量化精度綜合排行榜評測 (SenseVoiceSmall 語音識別)
+# 5. 一鍵全量化精度排行榜評測 (SenseVoiceSmall 語音識別)
 uv run python scripts/benchmark_sensevoice.py
 ```
 
-### Python API 調用：
+### 3. 量化架構與基準測試透明度說明
 
-```python
-from diarizeflow.quantize import auto_quantize_and_verify
+DiarizeFlow 明確區分**原生硬體圖算子 (Native Graph Operators)** 與 **數值誤差模擬量化 (Weight Emulation / Fake Quantization)**：
+- **原生硬體加速量化 (Native)**：
+  - **FP16**：利用 NVIDIA Tensor Cores (`CUDAExecutionProvider`) 實現真實硬體 2x 吞吐量加速。
+  - **INT8**：生成原生 ONNX 8-bit 動態量化算子（`QuantizeLinear`、`QLinearMatMul`），體積縮減 50%～70%。
+  - **W4A16**：利用 `MatMulNBitsQuantizer` 打包 4-bit 權重，大幅減省記憶體。
+- **數值誤差模擬量化 (Emulation)**：
+  - **FP8 / NVFP4 / MXFP4**：用於在前瞻微架構未完全成熟時，預先評估量化引入之數值誤差 (MSE) 與特徵餘弦保真度 (Cosine Similarity)，所有評測報表均嚴格註記標籤，不混淆實測與模擬數據。
 
-# 執行自動偵測量化、相似度比對與推論加速評測
-result_path, dev_info, metrics, benchmark = auto_quantize_and_verify(
-    input_model="models/nemotron_diarization/Nemotron-3-Diarization.onnx",
-    precision="fp16",  # "auto", "fp16", "int8", "fp8", "nvfp4", "mxfp4", "w4a16"
-    min_cosine_threshold=0.90,
-    bench_runs=15,
-)
+### 4. ONNX 模型張量規格
 
-print(f"推理加速比: {benchmark.speedup:.2f}x (延遲降低 {benchmark.latency_reduction_pct:.1f}%)")
-print(f"基準 FPS: {benchmark.orig_fps:.2f} chunks/s | 量化 FPS: {benchmark.quant_fps:.2f} chunks/s")
-```
-
----
-
-### 💎 量化架構與基準測試透明度說明 (Quantization Architecture & Benchmark Transparency)
-
-DiarizeFlow 堅持軟體架構與基準測試數據的完全透明度。在模型量化與評測體系中，我們明確區分**原生硬體圖算子 (Native Graph Operators)** 與 **數值誤差模擬量化 (Weight Emulation / Fake Quantization)**：
-
-#### 1. 原生硬體加速量化 (Native Hardware Quantization)
-* **FP16 (Half Precision)**：轉換 ONNX 圖權重至 IEEE 754 半精度，利用 NVIDIA Tensor Cores (`CUDAExecutionProvider`) 實現真實硬體 2x 吞吐量加速。
-* **INT8 (Dynamic Quantization)**：生成原生 ONNX 8-bit 動態量化算子（`QuantizeLinear`、`QLinearMatMul`、`MatMulInteger`），檔案體積真實縮減 50%～70%，適用於 CPU (AVX-512 / VNNI) 與 GPU 邊緣設備。
-* **W4A16 (Weight-Only MatMulNBits)**：使用 ONNX Runtime 官方 `MatMulNBitsQuantizer`，將矩陣權重以 4 位元打包儲存，模型實質縮減約 75% 磁碟與顯存佔用，推論時透過硬體原生解包至 16 位元進行激活乘加。
-
-#### 2. 數值誤差模擬量化 (Weight Emulation / Fake Quantization)
-* **涵蓋精度**：`FP8` (E4M3FN)、`NVFP4` (NVIDIA Blackwell E2M1)、`MXFP4` (OCP Microscaling E2M1 + E8M0)。
-* **技術原理**：當前開源推論引擎（如 ONNX Runtime、CTranslate2）對最新 4-bit / 8-bit 微架構原生硬體算子的支援尚在演進中。DiarizeFlow 採用權重數值投影模擬（Fake Quantization）：依據 Blackwell 雙層縮放或 OCP 規範，將浮點權重投影至目標格點後以浮點 Initializer 存儲。
-* **核心用途**：可在一般硬體環境下精確量測各量化格式所引入之數值誤差（MSE、Max Error）及語者分離/語音辨識之特徵向量餘弦保真度（Cosine Similarity），作為前期架構選型與精度評估的重要依據。
-* **透明度規範**：因以浮點初值儲存，該模式下模型容量未作位元打包壓縮，推論仍依浮點節點執行。專案內所有評測腳本均嚴格標記 `[實測硬體 (Native)]` 與 `[數值模擬 (Weight Emulation)]*`，堅決不混淆實際硬體測速與理論模擬數據。
-
-#### 3. 透明度感知 API (Python)
-```python
-from diarizeflow import (
-    is_native_quantization,
-    is_simulated_quantization,
-    get_quantization_execution_mode,
-)
-
-# 查詢精度執行模式
-print(get_quantization_execution_mode("fp16"))   # "實測硬體 (Native Graph Operators)"
-print(get_quantization_execution_mode("nvfp4"))  # "數值模擬 (Weight Emulation / Fake Quant)"
-print(is_simulated_quantization("mxfp4"))         # True
-```
-
----
-
-## 📊 ONNX 模型輸入與輸出規格
-
-轉換後的 ONNX 模型對應串流語者分離核心子圖：
-
-### 輸入張量 (Inputs)
-
-| 名稱 | 維度形狀 (Shape) | 數值型態 (dtype) | 說明 |
+| 張量名稱 | 維度形狀 (Shape) | 數值型態 | 說明 |
 | :--- | :--- | :--- | :--- |
-| `chunk` | `(batch_size, chunk_frames, 128)` | `float32` | 當前輸入的音訊特徵緩衝區（Mel-spectrogram 特徵） |
+| `chunk` | `(batch_size, chunk_frames, 128)` | `float32` | 輸入音訊 Mel-spectrogram 特徵 |
 | `chunk_lengths` | `(batch_size,)` | `int64` | `chunk` 的有效特徵幀長度 |
-| `spkcache` | `(batch_size, spkcache_len, 512)` | `float32` | 發話者快取特徵（AOSC 記憶狀態） |
+| `spkcache` | `(batch_size, spkcache_len, 512)` | `float32` | 語者快取特徵 (AOSC 記憶狀態) |
 | `spkcache_lengths` | `(batch_size,)` | `int64` | `spkcache` 的有效長度 |
 | `fifo` | `(batch_size, fifo_len, 512)` | `float32` | 最近幀 FIFO 隊列特徵 |
 | `fifo_lengths` | `(batch_size,)` | `int64` | `fifo` 的有效長度 |
-
-### 輸出張量 (Outputs)
-
-| 名稱 | 維度形狀 (Shape) | 數值型態 (dtype) | 說明 |
-| :--- | :--- | :--- | :--- |
 | `spkcache_fifo_chunk_preds` | `(batch_size, time, 8)` | `float32` | 各幀對應最多 8 位語者的發話機率預測值 |
-| `chunk_pre_encode_embs` | `(batch_size, num_frames, 512)` | `float32` | 當前 chunk 經過預編碼後的嵌入特徵（用於更新下一輪快取） |
-| `chunk_pre_encode_lengths` | `(batch_size,)` | `int64` | 預編碼特徵的長度 |
+| `chunk_pre_encode_embs` | `(batch_size, num_frames, 512)` | `float32` | 預編碼特徵向量（用於更新下一輪快取） |
+| `chunk_pre_encode_lengths` | `(batch_size,)` | `int64` | 預編碼特徵長度 |
 
 ---
 
@@ -208,105 +397,14 @@ print(is_simulated_quantization("mxfp4"))         # True
 2. **`ValueError: self_attention_model='rope' is not supported`**：
    - 官方 PyPI 舊版尚未包含 RoPE 實作，本專案直接連結 `NVIDIA-NeMo/Speech` 最新版源碼，完整原生支援 RoPE。
 3. **ONNX Runtime 顯示 `CUDAExecutionProvider is not in available provider names`**：
-   - 此為純 CPU 版 onnxruntime 警告，推論會自動 fallback 到 `CPUExecutionProvider`。若需 GPU 加速推論，可使用 `uv pip install onnxruntime-gpu`。
+   - 此為純 CPU 版 onnxruntime 提示，推論會自動 fallback 到 `CPUExecutionProvider`。若需 GPU 加速推論，可使用 `uv pip install onnxruntime-gpu`。
+4. **Wayland 環境下按下 `Alt+Shift+H` 無法切換穿透**：
+   - 此為 Wayland 安全沙盒限制全域按鍵攔截所致，請直接在桌面右下角系統托盤圖示點擊右鍵選單解除穿透。
+5. **打包執行檔報 `No module named pip`**：
+   - 請執行 `uv sync --extra build` 安裝打包群組，本專案已全面支援 `uv pip install` 自動打包相容回退。
 
 ---
 
-## 🎙️ 即時語者分離翻譯應用 (Real-time Diarization & Translation App)
+## 📄 開源授權
 
-DiarizeFlow 內建支援 **Windows 與 Linux** 的前後端分離即時語音分離與翻譯系統：
-
-```
-                               ┌──────────────────────────────────────────────┐
-                               │                 前端 (Frontend)               │
-                               │  - 麥克風 / 系統音訊 (WASAPI/Pulse Loopback) │
-                               │  - PySide6 原生透明飄浮 HUD (防畫面干擾)     │
-                               └──────────────────────┬───────────────────────┘
-                                                      │ WebSocket (/ws/audio, /ws/subtitles)
-                               ┌──────────────────────▼───────────────────────┐
-                               │                 後端 (Backend)               │
-                               │  1. VAD 動態語音端點偵測                     │
-                               │  2. Nemotron-3 Diarization 語者分離 (8人)    │
-                               │  3. SenseVoiceSmall 多語言 ASR (低延遲)      │
-                               │  4. 可選 LLM API 翻譯 (vLLM/llama.cpp/OpenAI)│
-                               └──────────────────────────────────────────────┘
-```
-
-### 1. 核心功能特性
-
-1. **多來源音訊即時捕捉 (Cross-Platform Audio Capture)**：
-   - **Windows**：支援 WASAPI Loopback 捕捉遊戲、瀏覽器、Discord 聲音，並可與麥克風同時混合收音。
-   - **Linux**：原生相容 PulseAudio 與 PipeWire Monitor 來源，輕鬆擷取系統內播音訊。
-2. **極致美觀的透明飄浮 UI (Floating HUD)**：
-   - 無邊框、背景毛玻璃半透明、釘選於最上層（Always on Top）、支援自由拖曳位置。
-   - **滑鼠穿透模式（Click-through）與防死鎖安全機制**：開啟後滑鼠點擊直接穿透到底層遊戲或視窗，不影響操作。內建三重防死鎖保護：
-     - **頂部控制列獨立保護**：字幕容器穿透時，頂部操作按鈕依然接受點擊與拖曳，可直接在視窗上解除。
-     - **全域快捷鍵切換**：隨時按下 `Alt+Shift+H` 或 `Ctrl+Shift+T` 一鍵切換穿透狀態。
-     - **系統托盤常駐 (QSystemTrayIcon)**：桌面右下角托盤提供快捷右鍵選單（切換穿透、開始/停止收音、設定、日誌、退出），即使完全穿透亦能輕鬆掌控。
-   - **自動淡出消失（Auto-dismiss）**：可自訂保留時間（預設 5 秒），發話結束自動淡出，徹底解決字幕長時間殘留干擾畫面的問題。
-   - **發話者顏色識別**：各語者對應專屬高對比霓虹色系（`講者 1`、`講者 2`...）。
-3. **高效端到端後端管線 (Backend Pipeline)**：
-   - **語者分離**：NVIDIA Nemotron-3 Diarization ONNX 模型（GPU FP16 / CPU INT8）。
-   - **語音辨識**：SenseVoiceSmall 多語言 ASR（自動偵測中/英/日/粵/韓語）。
-   - **多後端 LLM 翻譯**：相容 `vLLM`、`llama.cpp`、`OpenAI`、`Claude`、`Ollama`，自動清洗思考標籤（如 `<think>`）。
-
----
-
-### 2. 桌面透明飄浮視窗啟動方式 (Windows & Linux)
-
-#### 方式一：一鍵雙擊/指令啟動（最簡便）
-
-- **Linux 使用者**：
-  直接在終端機或檔案管理員中執行可執行腳本：
-  ```bash
-  ./run_desktop.sh
-  ```
-  *(亦可將 `DiarizeFlow.desktop` 放入 `~/.local/share/applications/` 透過應用程式選單啟動)*
-
-- **Windows 使用者**：
-  直接雙擊專案目錄下的 `run_desktop.bat` 即可啟動！
-
-#### 方式二：Python / uv 命令啟動
-
-```bash
-# 啟動 PySide6 原生透明飄浮 HUD（預設繁體中文，直連後端）
-uv run python scripts/run_app.py
-```
-
-#### 方式三：打包為免 Python 的獨立執行檔 (Executable)
-
-專案提供自動打包支援（Windows 為 `.exe`，Linux 為 ELF 執行檔）：
-
-1. **打包 Linux 執行檔（在 Linux 或 WSL 內運行）**：
-   ```bash
-   uv run python scripts/build_executable.py
-   ```
-   產物位於 `dist/DiarizeFlow/DiarizeFlow`。
-
-2. **在 WSL 內直接打包 Windows 執行檔 (`.exe`)**：
-   WSL 原生支援呼叫 Windows 宿主機環境，只需執行：
-   ```bash
-   ./build_windows_from_wsl.sh
-   ```
-   腳本會自動透過 Windows PowerShell 調用 Windows Python/uv 進行打包，產物直接生成為 `dist/DiarizeFlow/DiarizeFlow.exe`！
-
-3. **在 Windows 宿主機中打包**：
-   直接雙擊 `build_windows.bat` 即可一鍵完成打包！
-
----
-
-### 3. 設定與配置 (`config.json`)
-
-系統啟動會讀取 `config.json`，亦可隨時點擊懸浮視窗右上角 `⚙ 設定` 按鈕即時調整：
-
-| 參數 | 說明 | 預設 / 建議值 |
-| :--- | :--- | :--- |
-| `llm.provider` | 翻譯供應商 | `"vllm"`, `"llama.cpp"`, `"openai"`, `"claude"`, `"bypass"` |
-| `llm.base_url` | 翻譯 API 端點 | `"http://127.0.0.1:8000/v1"` |
-| `llm.target_language`| 目標語言 | `"繁體中文"`, `"English"`, `"日本語"`, `"한국어"` |
-| `llm.max_tokens` | 翻譯輸出上限 | `512` (已自動關閉推理思考 tokens，極速直出) |
-| `vad.silence_timeout_ms`| 發話停頓偵測時間 | `350` (低於 400ms 可達成極速語音切分) |
-| `ui.fade_out_seconds`| 字幕自動淡出消失秒數 | `5.0` (發話結束自動淡出，不遮蔽遊戲或螢幕) |
-| `ui.font_size` | 字幕字型大小 | `22` |
-| `audio.mic_device` | 麥克風裝置 ID | `null` (自動選取) 或整數 ID |
-| `audio.loopback_device`| 系統音訊 (Loopback) | `null` (自動選取) 或整數 ID |
+本專案基於 [MIT License](LICENSE) 條款開源發布。
