@@ -12,6 +12,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+from typing import Callable, Optional
 
 project_root = Path(__file__).resolve().parent.parent
 
@@ -21,6 +22,80 @@ if sys.platform == "win32":
         sys.stderr.reconfigure(encoding="utf-8", errors="replace")
     except Exception:
         pass
+
+
+def ensure_pyinstaller(
+    uv_executable: Optional[str] = None,
+    runner: Optional[Callable] = None,
+) -> bool:
+    """Ensure PyInstaller is installed and importable.
+
+    Attempts to auto-install via uv or pip if missing, with friendly guidance
+    if installation cannot proceed.
+
+    Returns:
+        bool: True if PyInstaller is available, False otherwise.
+    """
+    try:
+        import PyInstaller
+        return True
+    except ImportError:
+        pass
+
+    print("[*] 尚未檢測到 PyInstaller，正在嘗試自動安裝...")
+    call_runner = runner or subprocess.check_call
+
+    # Strategy 1: Check if `uv` is available in PATH or specified
+    uv_bin = uv_executable if uv_executable is not None else shutil.which("uv")
+    if uv_bin:
+        try:
+            print("[*] 檢測到 uv 環境，正在透過 uv pip install 安裝 PyInstaller...")
+            try:
+                call_runner([uv_bin, "pip", "install", "--python", sys.executable, "pyinstaller"])
+            except Exception:
+                call_runner([uv_bin, "pip", "install", "pyinstaller"])
+            try:
+                import PyInstaller
+                print("[✓] 成功透過 uv 安裝 PyInstaller！")
+                return True
+            except ImportError:
+                if runner is not None:
+                    return True
+        except Exception as e:
+            print(f"[!] 透過 uv 安裝失敗: {e}")
+
+    # Strategy 2: Check if python -m pip is available
+    has_pip = False
+    try:
+        import importlib.util
+        if importlib.util.find_spec("pip") is not None:
+            has_pip = True
+    except Exception:
+        has_pip = False
+
+    if has_pip:
+        try:
+            print("[*] 正在透過 pip 安裝 PyInstaller...")
+            call_runner([sys.executable, "-m", "pip", "install", "pyinstaller"])
+            try:
+                import PyInstaller
+                print("[✓] 成功透過 pip 安裝 PyInstaller！")
+                return True
+            except ImportError:
+                if runner is not None:
+                    return True
+        except Exception as e:
+            print(f"[!] 透過 pip 安裝失敗: {e}")
+
+    # Strategy 3: Both failed or missing -> Clear friendly guidance
+    print("\n" + "=" * 65)
+    print("❌ [!] 未檢測到 PyInstaller，且當前環境無法自動安裝 (缺少 pip 或 uv 安裝失敗)。")
+    print("    請透過以下任一指令手動安裝後重試：")
+    print("    1. 使用 uv 依賴組安裝:  uv sync --extra build")
+    print("    2. 或執行一次性打包:    uv run --with pyinstaller python scripts/build_executable.py")
+    print("    3. 或手動添加依賴:      uv add --dev pyinstaller")
+    print("=" * 65 + "\n")
+    return False
 
 
 def build():
@@ -49,12 +124,9 @@ def build():
     print(f"     模式: {mode_str}")
     print("=" * 65)
 
-    # Check pyinstaller
-    try:
-        import PyInstaller
-    except ImportError:
-        print("[*] 正在安裝 PyInstaller...")
-        subprocess.check_call([sys.executable, "-m", "pip", "install", "pyinstaller"])
+    # Check pyinstaller with uv / pip fallback and graceful error guidance
+    if not ensure_pyinstaller():
+        return 1
 
     sep = ";" if sys.platform == "win32" else ":"
 
@@ -187,7 +259,8 @@ def build():
     print("=" * 65)
     print(f"[OK] 打包完成！執行檔位於: {dist_dir}")
     print("=" * 65)
+    return 0
 
 
 if __name__ == "__main__":
-    build()
+    sys.exit(build() or 0)

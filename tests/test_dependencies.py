@@ -105,6 +105,23 @@ class TestRuntimeDependencies(unittest.TestCase):
         dep_groups = data.get("dependency-groups", {})
         self.assertIn("dev", dep_groups)
 
+    def test_build_optional_dependencies_declares_pyinstaller(self):
+        """Verify pyinstaller is declared in optional-dependencies.build and dependency-groups.build (Issue #57)."""
+        pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
+        with open(pyproject_path, "rb") as f:
+            data = tomllib.load(f)
+
+        optional_deps = data.get("project", {}).get("optional-dependencies", {})
+        self.assertIn("build", optional_deps)
+        build_names = {
+            dep.split(">=")[0].split("==")[0].split("<=")[0].split("~=")[0].split(">")[0].split("<")[0].strip().lower().replace("_", "-")
+            for dep in optional_deps["build"]
+        }
+        self.assertIn("pyinstaller", build_names)
+
+        dep_groups = data.get("dependency-groups", {})
+        self.assertIn("build", dep_groups)
+
     def test_pytest_configuration_restricts_testpaths_and_excludes_scratch(self):
         """Verify pytest ini_options configures testpaths to tests/ and ignores scratch/ (Issue #35)."""
         pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
