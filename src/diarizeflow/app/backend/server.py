@@ -24,6 +24,7 @@ import io
 from diarizeflow.app.config import AppConfig
 from diarizeflow.app.backend.pipeline import DiarizeFlowPipeline, SubtitleEvent
 from diarizeflow.app.audio.devices import list_audio_devices
+from diarizeflow.app.audio.protocol import unpack_audio_frame
 
 
 def create_app(config: AppConfig, pipeline: DiarizeFlowPipeline) -> FastAPI:
@@ -89,16 +90,16 @@ def create_app(config: AppConfig, pipeline: DiarizeFlowPipeline) -> FastAPI:
 
     @app.websocket("/ws/audio")
     async def audio_websocket(websocket: WebSocket):
-        """WebSocket endpoint receiving binary 16kHz float32 PCM audio chunks."""
+        """WebSocket endpoint receiving binary 16kHz float32 PCM audio chunks with optional metadata header."""
         await websocket.accept()
         try:
             while True:
                 data = await websocket.receive_bytes()
                 if not data:
                     continue
-                # Parse raw bytes as float32 array
-                chunk = np.frombuffer(data, dtype=np.float32)
-                pipeline.process_audio_chunk(chunk)
+                # Unpack frame metadata header or fallback to raw float32 PCM
+                chunk, track, sample_rate, channels = unpack_audio_frame(data)
+                pipeline.process_audio_chunk(chunk, source=track)
         except WebSocketDisconnect:
             pass
         except Exception as e:
@@ -138,6 +139,8 @@ def create_app(config: AppConfig, pipeline: DiarizeFlowPipeline) -> FastAPI:
             "asr_provider": pipeline.asr.active_provider,
             "llm_provider": config.llm.provider,
             "target_language": config.llm.target_language,
+            "last_audio_source": getattr(pipeline, "last_audio_source", "mixed"),
+            "audio_stats": getattr(pipeline, "audio_stats", None),
         }
 
     @app.get("/api/config")

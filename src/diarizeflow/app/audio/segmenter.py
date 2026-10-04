@@ -123,6 +123,7 @@ class StreamingDiarizationSegmenter:
         self.total_overlap_chunks: int = 0
         self.separated_overlap_chunks: int = 0
         self.channel_last_embeddings: Dict[int, np.ndarray] = {}
+        self.last_chunk_source: str = "mixed"
 
         # Sample limits
         self.silence_timeout_samples = int((silence_timeout_ms / 1000.0) * self.sample_rate)
@@ -161,19 +162,26 @@ class StreamingDiarizationSegmenter:
         )
 
     def process_chunk(
-        self, chunk: np.ndarray, rms: Optional[float] = None
+        self,
+        chunk: np.ndarray,
+        rms: Optional[float] = None,
+        source: Optional[str] = None,
     ) -> List[Tuple[np.ndarray, str, float, float]]:
         """Ingest streaming audio chunk and return any completed speaker utterances.
 
         Args:
             chunk: 1D float32 audio array (typically 100ms - 250ms).
             rms: Optional pre-computed RMS energy.
+            source: Optional audio track source tag ('mic', 'loopback', 'mixed').
 
         Returns:
             List of (audio_segment, speaker_label, confidence, duration).
         """
         if len(chunk) == 0:
             return []
+
+        if source is not None:
+            self.last_chunk_source = source
 
         if rms is None:
             rms = float(np.sqrt(np.mean(chunk ** 2) + 1e-9))
