@@ -49,8 +49,8 @@ class TestRuntimeDependencies(unittest.TestCase):
             import soundcard as sc
             self.assertTrue(hasattr(sc, "all_microphones"))
             self.assertTrue(hasattr(sc, "all_speakers"))
-        except (AssertionError, RuntimeError, IndexError):
-            # In headless Linux or environments without an active PulseAudio server,
+        except (AssertionError, RuntimeError, IndexError, OSError):
+            # In headless Linux or environments without an active PulseAudio server/library,
             # soundcard initialization fails at module import. Package presence is already verified.
             pass
 
