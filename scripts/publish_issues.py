@@ -194,6 +194,42 @@ ISSUES = [
         "file": project_root / ".github" / "issues" / "29_fix_build_executable_pip_missing_in_uv.md",
         "labels": ["bug", "packaging", "build", "high-priority"],
     },
+    {
+        "id": "30",
+        "title": "[Refactor/Architecture]: 專案套件架構分層重整：消除 app/ 冗餘層級與消除跨層雙向依賴",
+        "file": project_root / ".github" / "issues" / "30_refactor_package_architecture_clean_layers.md",
+        "labels": ["refactor", "architecture"],
+    },
+    {
+        "id": "31",
+        "title": "[Refactor/Frontend]: 解耦 overlay_window.py 上帝類別：抽取 HotkeyManager、HUDTrayManager 與 GeometryManager",
+        "file": project_root / ".github" / "issues" / "31_refactor_decouple_overlay_window_god_class.md",
+        "labels": ["refactor", "ui", "frontend"],
+    },
+    {
+        "id": "32",
+        "title": "[Refactor/Backend]: 語者分離引擎職責解耦：拆分 SortformerEngine、SpeakerIdentityTracker 與 IntervalSplitter",
+        "file": project_root / ".github" / "issues" / "32_refactor_diarizer_responsibilities_separation.md",
+        "labels": ["refactor", "diarization", "architecture"],
+    },
+    {
+        "id": "33",
+        "title": "[Refactor/Performance]: 規範管線執行緒與非同步邊界：改採原生 Async Stream Pipeline 減少佇列與執行緒切換",
+        "file": project_root / ".github" / "issues" / "33_refactor_pipeline_threading_and_async_boundary.md",
+        "labels": ["refactor", "performance", "pipeline"],
+    },
+    {
+        "id": "34",
+        "title": "[Refactor/Audio]: 解耦 capture.py：獨立 audio/router.py 並引入狀態化 StreamingResampler",
+        "file": project_root / ".github" / "issues" / "34_refactor_audio_capture_and_stateful_resampler.md",
+        "labels": ["refactor", "audio", "dsp"],
+    },
+    {
+        "id": "35",
+        "title": "[Refactor/Config]: 健全配置中心 Schema 驗證：提供強型別保證並消除全域 getattr 防禦性代碼",
+        "file": project_root / ".github" / "issues" / "35_refactor_config_schema_validation_eliminate_getattr.md",
+        "labels": ["refactor", "config", "robustness"],
+    },
 ]
 
 REPO = "saijo0404/DiarizeFlow"
