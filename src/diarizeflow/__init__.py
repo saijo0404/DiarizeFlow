@@ -1,13 +1,28 @@
-"""DiarizeFlow package."""
+"""DiarizeFlow package.
+
+Layered architecture (dependencies point strictly downward)::
+
+    cli  ->  ui / engine  ->  audio  ->  config
+     \\->  core  ->  config
+
+- ``config``: unified configuration center (domain base).
+- ``core``: hardware awareness, ONNX export / patches, quantization, calibration.
+- ``audio``: capture, DSP routing, SAD, TSE, AGC and wire protocol.
+- ``engine``: ASR, diarizer, translator, voiceprint DB, pipeline, FastAPI server.
+- ``ui``: PySide6 HUD overlay, cards, dialogs and widgets.
+- ``cli``: desktop launcher and model downloader entrypoints.
+"""
+
+from diarizeflow.config import AppConfig
 
 try:
-    from diarizeflow.export_onnx import export_nemo_to_onnx, StreamingSortformerOnnxWrapper
+    from diarizeflow.core.export_onnx import export_nemo_to_onnx, StreamingSortformerOnnxWrapper
 except ImportError:
     export_nemo_to_onnx = None
     StreamingSortformerOnnxWrapper = None
 
 try:
-    from diarizeflow.hardware import (
+    from diarizeflow.core.hardware import (
         DeviceInfo,
         QuantPrecision,
         detect_nvidia_gpu,
@@ -18,12 +33,12 @@ except ImportError:
     pass
 
 try:
-    from diarizeflow.patches import apply_onnx_export_patches
+    from diarizeflow.core.patches import apply_onnx_export_patches
 except ImportError:
     apply_onnx_export_patches = None
 
 try:
-    from diarizeflow.quantize import (
+    from diarizeflow.core.quantize import (
         LatencyBenchmark,
         SimilarityMetric,
         auto_quantize_and_verify,
@@ -45,6 +60,7 @@ except ImportError:
 
 __version__ = "2.0.0"
 __all__ = [
+    "AppConfig",
     "export_nemo_to_onnx",
     "StreamingSortformerOnnxWrapper",
     "apply_onnx_export_patches",

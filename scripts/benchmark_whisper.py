@@ -26,7 +26,7 @@ import numpy as np
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
-from diarizeflow.app.config import resolve_app_path
+from diarizeflow.config import resolve_app_path
 
 
 def compute_text_similarity(s1: str, s2: str) -> float:

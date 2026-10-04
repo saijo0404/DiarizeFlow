@@ -7,7 +7,7 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
-from diarizeflow.app.config import AppConfig
+from diarizeflow.config import AppConfig
 
 
 def main():
@@ -21,7 +21,7 @@ def main():
     cfg.server.port = args.port
 
     try:
-        from diarizeflow.app.frontend.desktop_overlay import run_overlay_app
+        from diarizeflow.ui.desktop_overlay import run_overlay_app
         print("[*] 啟動 PySide6 原生透明飄浮字幕視窗 (Windows / Linux)...")
         sys.exit(run_overlay_app(cfg))
     except Exception as e:

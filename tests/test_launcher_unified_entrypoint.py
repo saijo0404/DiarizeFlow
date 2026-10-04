@@ -6,7 +6,7 @@ Covers:
 - attach_console_on_windows and setup_global_logging exception hooking.
 - find_available_port conflict handling.
 - ensure_calibrated_models invocation during launcher startup.
-- scripts/run_app.py thin wrapper parity with diarizeflow.app.launcher.
+- scripts/run_app.py thin wrapper parity with diarizeflow.cli.launcher.
 """
 
 import io
@@ -19,7 +19,7 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
-from diarizeflow.app.launcher import (
+from diarizeflow.cli.launcher import (
     DualLogger,
     attach_console_on_windows,
     find_available_port,
@@ -211,11 +211,11 @@ class TestPortDiscoveryAndServer(unittest.TestCase):
 class TestUnifiedLauncherExecution(unittest.TestCase):
     """Test run_cli execution, hardware auto-calibration invocation, and run_app.py thin wrapper."""
 
-    @patch("diarizeflow.calibration.ensure_calibrated_models")
-    @patch("diarizeflow.app.launcher.setup_global_logging")
-    @patch("diarizeflow.app.launcher.start_server_in_thread", return_value=(MagicMock(), MagicMock()))
-    @patch("diarizeflow.app.launcher.DiarizeFlowPipeline")
-    @patch("diarizeflow.app.frontend.desktop_overlay.run_overlay_app", return_value=0)
+    @patch("diarizeflow.core.calibration.ensure_calibrated_models")
+    @patch("diarizeflow.cli.launcher.setup_global_logging")
+    @patch("diarizeflow.cli.launcher.start_server_in_thread", return_value=(MagicMock(), MagicMock()))
+    @patch("diarizeflow.cli.launcher.DiarizeFlowPipeline")
+    @patch("diarizeflow.ui.desktop_overlay.run_overlay_app", return_value=0)
     def test_run_cli_triggers_ensure_calibrated_models(
         self, mock_overlay, mock_pipeline, mock_server, mock_logging, mock_calib
     ):

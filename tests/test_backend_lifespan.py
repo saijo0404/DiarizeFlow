@@ -16,8 +16,8 @@ import pytest
 from fastapi import FastAPI, WebSocket
 from fastapi.testclient import TestClient
 
-from diarizeflow.app.backend.server import create_app
-from diarizeflow.app.config import AppConfig
+from diarizeflow.engine.server import create_app
+from diarizeflow.config import AppConfig
 
 
 @pytest.mark.asyncio

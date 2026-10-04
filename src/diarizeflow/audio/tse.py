@@ -23,7 +23,7 @@ try:
 except ImportError:
     ort = None
 
-from diarizeflow.app.config import TSEConfig, resolve_app_path
+from diarizeflow.config import TSEConfig, resolve_app_path
 
 
 class TargetSpeakerExtractor:

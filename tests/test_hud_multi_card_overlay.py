@@ -17,8 +17,8 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtWidgets import QApplication
 
-from diarizeflow.app.config import AppConfig
-from diarizeflow.app.frontend.desktop_overlay import (
+from diarizeflow.config import AppConfig
+from diarizeflow.ui.desktop_overlay import (
     SubtitleCardWidget,
     TransparentSubtitleOverlay,
     get_speaker_color,

@@ -22,8 +22,8 @@ from PySide6.QtCore import QPoint, Qt
 from PySide6.QtGui import QKeySequence, QShortcut
 from PySide6.QtWidgets import QApplication, QSystemTrayIcon
 
-from diarizeflow.app.config import AppConfig
-from diarizeflow.app.frontend.desktop_overlay import (
+from diarizeflow.config import AppConfig
+from diarizeflow.ui.desktop_overlay import (
     SubtitleCardWidget,
     TransparentSubtitleOverlay,
 )

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """All-in-One Launcher for DiarizeFlow (Backend + Frontend Floating HUD).
 
-Thin wrapper delegating directly to diarizeflow.app.launcher.run_cli.
+Thin wrapper delegating directly to diarizeflow.cli.launcher.run_cli.
 """
 
 import sys
@@ -11,7 +11,7 @@ from pathlib import Path
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
-from diarizeflow.app.launcher import (  # noqa: F401
+from diarizeflow.cli.launcher import (  # noqa: F401
     DualLogger,
     attach_console_on_windows,
     find_available_port,

@@ -21,8 +21,8 @@ from PySide6.QtCore import QPoint, QPointF, QRect, Qt
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
-from diarizeflow.app.config import AppConfig, UIConfig
-from diarizeflow.app.frontend.desktop_overlay import TransparentSubtitleOverlay
+from diarizeflow.config import AppConfig, UIConfig
+from diarizeflow.ui.desktop_overlay import TransparentSubtitleOverlay
 
 
 class TestHUDGeometryPersistence(unittest.TestCase):

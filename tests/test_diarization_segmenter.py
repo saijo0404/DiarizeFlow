@@ -6,9 +6,9 @@ import unittest
 from unittest.mock import MagicMock, patch
 import numpy as np
 
-from diarizeflow.app.config import AppConfig, DiarizationConfig
-from diarizeflow.app.audio.segmenter import StreamingDiarizationSegmenter, SpeakerChannelBuffer
-from diarizeflow.app.backend.diarizer import NemotronDiarizer
+from diarizeflow.config import AppConfig, DiarizationConfig
+from diarizeflow.audio.segmenter import StreamingDiarizationSegmenter, SpeakerChannelBuffer
+from diarizeflow.engine.diarizer import NemotronDiarizer
 
 
 class TestDiarizationDrivenSegmenter(unittest.TestCase):

@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import aiohttp
 from aiohttp import web
 
-from diarizeflow.app.config import LLMConfig
-from diarizeflow.app.backend.translator import LLMTranslator
+from diarizeflow.config import LLMConfig
+from diarizeflow.engine.translator import LLMTranslator
 
 
 class TestPersistentTranslatorSession(unittest.IsolatedAsyncioTestCase):

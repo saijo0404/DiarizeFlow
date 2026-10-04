@@ -13,7 +13,7 @@ import onnx
 from onnx import numpy_helper
 import onnxruntime as ort
 
-from diarizeflow.hardware import DeviceInfo, QuantPrecision, get_system_device_info
+from diarizeflow.core.hardware import DeviceInfo, QuantPrecision, get_system_device_info
 
 
 @dataclass

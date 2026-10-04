@@ -17,10 +17,10 @@ import unittest
 from unittest.mock import MagicMock, patch
 import numpy as np
 
-from diarizeflow.app.config import AppConfig, TSEConfig
-from diarizeflow.app.audio.tse import TargetSpeakerExtractor
-from diarizeflow.app.audio.segmenter import StreamingDiarizationSegmenter, SpeakerChannelBuffer
-from diarizeflow.app.backend.pipeline import DiarizeFlowPipeline
+from diarizeflow.config import AppConfig, TSEConfig
+from diarizeflow.audio.tse import TargetSpeakerExtractor
+from diarizeflow.audio.segmenter import StreamingDiarizationSegmenter, SpeakerChannelBuffer
+from diarizeflow.engine.pipeline import DiarizeFlowPipeline
 
 
 def make_harmonic_speech(f0: float, duration_s: float = 1.0, sr: int = 16000) -> np.ndarray:
@@ -261,9 +261,9 @@ class TestPipelineTSEIntegration(unittest.TestCase):
         cfg.tse.min_gain = 0.08
 
         # Mock heavy submodules to avoid long model loading
-        with patch("diarizeflow.app.backend.pipeline.NemotronDiarizer"), \
-             patch("diarizeflow.app.backend.pipeline.create_asr_engine"), \
-             patch("diarizeflow.app.backend.pipeline.LLMTranslator"):
+        with patch("diarizeflow.engine.pipeline.NemotronDiarizer"), \
+             patch("diarizeflow.engine.pipeline.create_asr_engine"), \
+             patch("diarizeflow.engine.pipeline.LLMTranslator"):
             pipeline = DiarizeFlowPipeline(cfg)
 
             self.assertIsNotNone(pipeline.tse)

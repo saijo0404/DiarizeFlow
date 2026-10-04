@@ -38,19 +38,19 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from diarizeflow.app.audio.capture import AudioCaptureStream
-from diarizeflow.app.audio.devices import list_audio_devices
-from diarizeflow.app.audio.protocol import pack_audio_frame
-from diarizeflow.app.config import AppConfig
-from diarizeflow.app.frontend.cards import SubtitleCardWidget
-from diarizeflow.app.frontend.display_server import (
+from diarizeflow.audio.capture import AudioCaptureStream
+from diarizeflow.audio.devices import list_audio_devices
+from diarizeflow.audio.protocol import pack_audio_frame
+from diarizeflow.config import AppConfig
+from diarizeflow.ui.cards import SubtitleCardWidget
+from diarizeflow.ui.display_server import (
     detect_display_server,
     get_clickthrough_balloon_message,
     get_clickthrough_tooltip,
     get_clickthrough_tray_title,
     print_display_server_guidance,
 )
-from diarizeflow.app.frontend.network import (
+from diarizeflow.ui.network import (
     fetch_remote_backend_config,
     run_audio_client,
     run_subtitles_client,
@@ -58,8 +58,8 @@ from diarizeflow.app.frontend.network import (
     send_remote_rename_api,
     sync_config_to_remote_backend,
 )
-from diarizeflow.app.frontend.settings_dialog import SettingsDialog
-from diarizeflow.app.frontend.widgets import create_app_icon, format_vu_level
+from diarizeflow.ui.settings_dialog import SettingsDialog
+from diarizeflow.ui.widgets import create_app_icon, format_vu_level
 
 
 class TransparentSubtitleOverlay(QWidget):

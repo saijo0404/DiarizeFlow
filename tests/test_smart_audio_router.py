@@ -16,7 +16,7 @@ import time
 import unittest
 import numpy as np
 
-from diarizeflow.app.audio.capture import AudioCaptureStream, SmartAudioRouter
+from diarizeflow.audio.capture import AudioCaptureStream, SmartAudioRouter
 
 
 class DummyStream:

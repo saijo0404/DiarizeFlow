@@ -29,8 +29,8 @@ os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 from PySide6.QtWidgets import QApplication
 
-from diarizeflow.app.config import AppConfig
-from diarizeflow.app.frontend.display_server import (
+from diarizeflow.config import AppConfig
+from diarizeflow.ui.display_server import (
     DisplayServerInfo,
     detect_display_server,
     get_clickthrough_balloon_message,
@@ -39,8 +39,8 @@ from diarizeflow.app.frontend.display_server import (
     is_wayland_session,
     print_display_server_guidance,
 )
-from diarizeflow.app.frontend.overlay_window import TransparentSubtitleOverlay
-from diarizeflow.app.frontend.settings_dialog import SettingsDialog
+from diarizeflow.ui.overlay_window import TransparentSubtitleOverlay
+from diarizeflow.ui.settings_dialog import SettingsDialog
 
 
 class TestDisplayServerDetection(unittest.TestCase):
@@ -216,7 +216,7 @@ class TestHUDOverlayWaylandIntegration(unittest.TestCase):
             hotkeys_supported=False,
         )
 
-        with patch("diarizeflow.app.frontend.overlay_window.detect_display_server", return_value=wayland_info):
+        with patch("diarizeflow.ui.overlay_window.detect_display_server", return_value=wayland_info):
             overlay = TransparentSubtitleOverlay(
                 config=cfg,
                 enable_network=False,
@@ -254,7 +254,7 @@ class TestHUDOverlayWaylandIntegration(unittest.TestCase):
             hotkeys_supported=True,
         )
 
-        with patch("diarizeflow.app.frontend.overlay_window.detect_display_server", return_value=x11_info):
+        with patch("diarizeflow.ui.overlay_window.detect_display_server", return_value=x11_info):
             overlay = TransparentSubtitleOverlay(
                 config=cfg,
                 enable_network=False,
@@ -286,7 +286,7 @@ class TestSettingsDialogWaylandIntegration(unittest.TestCase):
             hotkeys_supported=False,
         )
 
-        with patch("diarizeflow.app.frontend.settings_dialog.detect_display_server", return_value=wayland_info):
+        with patch("diarizeflow.ui.settings_dialog.detect_display_server", return_value=wayland_info):
             dialog = SettingsDialog(cfg)
             # Find any label containing Wayland
             labels = dialog.findChildren(object)
@@ -307,7 +307,7 @@ class TestSettingsDialogWaylandIntegration(unittest.TestCase):
             hotkeys_supported=True,
         )
 
-        with patch("diarizeflow.app.frontend.settings_dialog.detect_display_server", return_value=x11_info):
+        with patch("diarizeflow.ui.settings_dialog.detect_display_server", return_value=x11_info):
             dialog = SettingsDialog(cfg)
             labels = dialog.findChildren(object)
             found_wayland = any("Linux Wayland" in getattr(w, "text", lambda: "")() for w in labels if hasattr(w, "text"))

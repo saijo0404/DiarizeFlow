@@ -11,9 +11,9 @@ import librosa
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
-from diarizeflow.app.config import AppConfig
-from diarizeflow.app.backend.pipeline import DiarizeFlowPipeline, SubtitleEvent
-from diarizeflow.app.audio.devices import list_audio_devices
+from diarizeflow.config import AppConfig
+from diarizeflow.engine.pipeline import DiarizeFlowPipeline, SubtitleEvent
+from diarizeflow.audio.devices import list_audio_devices
 
 
 def test_audio_device_discovery():

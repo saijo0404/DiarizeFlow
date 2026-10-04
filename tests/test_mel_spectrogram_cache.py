@@ -18,8 +18,8 @@ import librosa
 import numpy as np
 import scipy.signal
 
-from diarizeflow.app.backend.diarizer import NemotronDiarizer
-from diarizeflow.app.config import DiarizationConfig
+from diarizeflow.engine.diarizer import NemotronDiarizer
+from diarizeflow.config import DiarizationConfig
 
 
 class TestMelSpectrogramCache(unittest.TestCase):

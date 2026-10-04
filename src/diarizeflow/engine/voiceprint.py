@@ -17,7 +17,7 @@ from typing import Any, Dict, List, Optional, Union
 import uuid
 import numpy as np
 
-from diarizeflow.app.config import get_data_path, resolve_app_path
+from diarizeflow.config import get_data_path, resolve_app_path
 
 
 @dataclass

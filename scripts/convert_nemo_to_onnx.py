@@ -14,7 +14,7 @@ except ImportError:
     print("[!] 尚未安裝模型轉換依賴。請執行: uv sync --extra export (或 pip install -e '.[export]')")
     sys.exit(1)
 
-from diarizeflow.export_onnx import main
+from diarizeflow.core.export_onnx import main
 
 if __name__ == "__main__":
     main()

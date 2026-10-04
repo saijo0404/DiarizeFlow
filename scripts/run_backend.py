@@ -10,9 +10,9 @@ import uvicorn
 project_root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(project_root / "src"))
 
-from diarizeflow.app.config import AppConfig
-from diarizeflow.app.backend.pipeline import DiarizeFlowPipeline
-from diarizeflow.app.backend.server import create_app
+from diarizeflow.config import AppConfig
+from diarizeflow.engine.pipeline import DiarizeFlowPipeline
+from diarizeflow.engine.server import create_app
 
 
 def main():

@@ -30,7 +30,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 from fastapi.testclient import TestClient
 
-from diarizeflow.app.audio.protocol import (
+from diarizeflow.audio.protocol import (
     AUDIO_FRAME_HEADER_MAGIC,
     AUDIO_FRAME_HEADER_SIZE,
     AUDIO_FRAME_VERSION,
@@ -39,12 +39,12 @@ from diarizeflow.app.audio.protocol import (
     pack_audio_frame,
     unpack_audio_frame,
 )
-from diarizeflow.app.audio.capture import AudioCaptureStream
-from diarizeflow.app.audio.segmenter import StreamingDiarizationSegmenter
-from diarizeflow.app.backend.pipeline import DiarizeFlowPipeline
-from diarizeflow.app.backend.server import create_app
-from diarizeflow.app.config import AppConfig
-from diarizeflow.app.frontend.network import run_audio_client
+from diarizeflow.audio.capture import AudioCaptureStream
+from diarizeflow.audio.segmenter import StreamingDiarizationSegmenter
+from diarizeflow.engine.pipeline import DiarizeFlowPipeline
+from diarizeflow.engine.server import create_app
+from diarizeflow.config import AppConfig
+from diarizeflow.ui.network import run_audio_client
 
 
 class TestAudioProtocolBinaryFraming(unittest.TestCase):
@@ -209,10 +209,10 @@ class TestPipelineAndSegmenterTrackAwareness(unittest.TestCase):
         """Verify DiarizeFlowPipeline.process_audio_chunk tracks sources and updates counters."""
         cfg = AppConfig()
         # Mock components to avoid loading heavy models
-        with patch("diarizeflow.app.backend.pipeline.NemotronDiarizer"), \
-             patch("diarizeflow.app.backend.pipeline.create_asr_engine"), \
-             patch("diarizeflow.app.backend.pipeline.LLMTranslator"), \
-             patch("diarizeflow.app.backend.pipeline.StreamingDiarizationSegmenter"):
+        with patch("diarizeflow.engine.pipeline.NemotronDiarizer"), \
+             patch("diarizeflow.engine.pipeline.create_asr_engine"), \
+             patch("diarizeflow.engine.pipeline.LLMTranslator"), \
+             patch("diarizeflow.engine.pipeline.StreamingDiarizationSegmenter"):
             pipeline = DiarizeFlowPipeline(cfg)
             pipeline.is_running = True
 
@@ -312,7 +312,7 @@ class TestFrontendCaptureAndNetworkClient(unittest.TestCase):
                 is_running_flag[0] = False
             return is_running_flag[0]
 
-        with patch("diarizeflow.app.frontend.network.ws_connect") as mock_connect:
+        with patch("diarizeflow.ui.network.ws_connect") as mock_connect:
             mock_ws = MockWebSocket()
             mock_connect.return_value.__enter__.return_value = mock_ws
 
@@ -351,7 +351,7 @@ class TestHUDOverlayFramingStreaming(unittest.TestCase):
 
     def test_overlay_on_audio_chunk_in_process_pipeline(self):
         """Verify _on_audio_chunk passes chunk, rms, and source to pipeline when pipeline is active."""
-        from diarizeflow.app.frontend.desktop_overlay import TransparentSubtitleOverlay
+        from diarizeflow.ui.desktop_overlay import TransparentSubtitleOverlay
 
         cfg = AppConfig()
         mock_pipeline = MagicMock()
@@ -372,7 +372,7 @@ class TestHUDOverlayFramingStreaming(unittest.TestCase):
 
     def test_overlay_on_audio_chunk_remote_streaming_packs_frame(self):
         """Verify _on_audio_chunk emits framed packet when pipeline is None (network mode)."""
-        from diarizeflow.app.frontend.desktop_overlay import TransparentSubtitleOverlay
+        from diarizeflow.ui.desktop_overlay import TransparentSubtitleOverlay
 
         cfg = AppConfig()
         overlay = TransparentSubtitleOverlay(

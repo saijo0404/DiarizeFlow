@@ -18,7 +18,7 @@ import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
-from diarizeflow.models import (
+from diarizeflow.cli.downloader import (
     MODEL_CATALOG,
     ModelFileSpec,
     calculate_sha256,
@@ -311,18 +311,18 @@ class TestDownloadFileLogic(unittest.TestCase):
     def test_launcher_displays_missing_models_prompt_when_models_absent(self):
         """Verify launcher.run_cli outputs friendly guidance when models are missing."""
         import sys
-        from diarizeflow.app.launcher import run_cli
+        from diarizeflow.cli.launcher import run_cli
 
         test_cfg_path = str(self.target_dir / "test_config.json")
         test_args = ["diarizeflow-app", "--config", test_cfg_path]
         with patch.object(sys, "argv", test_args), \
-             patch("diarizeflow.app.launcher.setup_global_logging"), \
-             patch("diarizeflow.app.launcher.check_missing_models", return_value=["SenseVoiceSmall 語音辨識 ONNX 模型"]), \
-             patch("diarizeflow.calibration.ensure_calibrated_models"), \
-             patch("diarizeflow.app.launcher.DiarizeFlowPipeline"), \
-             patch("diarizeflow.app.launcher.create_app"), \
-             patch("diarizeflow.app.launcher.start_server_in_thread", return_value=(MagicMock(), MagicMock())), \
-             patch("diarizeflow.app.frontend.desktop_overlay.run_overlay_app", return_value=0), \
+             patch("diarizeflow.cli.launcher.setup_global_logging"), \
+             patch("diarizeflow.cli.launcher.check_missing_models", return_value=["SenseVoiceSmall 語音辨識 ONNX 模型"]), \
+             patch("diarizeflow.core.calibration.ensure_calibrated_models"), \
+             patch("diarizeflow.cli.launcher.DiarizeFlowPipeline"), \
+             patch("diarizeflow.cli.launcher.create_app"), \
+             patch("diarizeflow.cli.launcher.start_server_in_thread", return_value=(MagicMock(), MagicMock())), \
+             patch("diarizeflow.ui.desktop_overlay.run_overlay_app", return_value=0), \
              patch("builtins.print") as mock_print:
 
             code = run_cli()

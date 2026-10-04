@@ -18,11 +18,11 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 
-from diarizeflow.app.audio.segmenter import SpeakerChannelBuffer, StreamingDiarizationSegmenter
-from diarizeflow.app.backend.diarizer import NemotronDiarizer
-from diarizeflow.app.backend.pipeline import DiarizeFlowPipeline, SubtitleEvent
-from diarizeflow.app.backend.voiceprint import SpeakerProfile
-from diarizeflow.app.config import AppConfig, DiarizationConfig
+from diarizeflow.audio.segmenter import SpeakerChannelBuffer, StreamingDiarizationSegmenter
+from diarizeflow.engine.diarizer import NemotronDiarizer
+from diarizeflow.engine.pipeline import DiarizeFlowPipeline, SubtitleEvent
+from diarizeflow.engine.voiceprint import SpeakerProfile
+from diarizeflow.config import AppConfig, DiarizationConfig
 
 
 class TestNemotronEmbeddingCachingAndFastIdentification(unittest.TestCase):

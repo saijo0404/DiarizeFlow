@@ -1,10 +1,10 @@
-"""DiarizeFlow frontend package."""
+"""DiarizeFlow desktop UI package (PySide6 HUD overlay, cards, dialogs, widgets)."""
 
-from diarizeflow.app.frontend.cards import (
+from diarizeflow.ui.cards import (
     SpeakerBadge,
     SubtitleCardWidget,
 )
-from diarizeflow.app.frontend.display_server import (
+from diarizeflow.ui.display_server import (
     DisplayServerInfo,
     detect_display_server,
     get_clickthrough_balloon_message,
@@ -13,13 +13,13 @@ from diarizeflow.app.frontend.display_server import (
     is_wayland_session,
     print_display_server_guidance,
 )
-from diarizeflow.app.frontend.overlay_window import (
+from diarizeflow.ui.overlay_window import (
     TransparentSubtitleOverlay,
     run_cli,
     run_overlay_app,
 )
-from diarizeflow.app.frontend.settings_dialog import SettingsDialog
-from diarizeflow.app.frontend.widgets import (
+from diarizeflow.ui.settings_dialog import SettingsDialog
+from diarizeflow.ui.widgets import (
     SPEAKER_COLORS,
     create_app_icon,
     format_vu_level,
