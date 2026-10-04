@@ -267,7 +267,14 @@ def run_cli() -> int:
     server, thread = start_server_in_thread(app, "127.0.0.1", actual_port)
     time.sleep(0.5)
 
-    # 6. Start Frontend HUD
+    # 6. Check display server environment & emit Wayland guidance if running on Wayland
+    try:
+        from diarizeflow.app.frontend.display_server import print_display_server_guidance
+        print_display_server_guidance()
+    except Exception:
+        pass
+
+    # 7. Start Frontend HUD
     try:
         from diarizeflow.app.frontend.desktop_overlay import run_overlay_app
         print("[*] 正在啟動 PySide6 原生透明飄浮字幕視窗 (Windows & Linux 相容)...")

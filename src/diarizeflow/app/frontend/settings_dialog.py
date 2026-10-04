@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 
 from diarizeflow.app.audio.devices import list_audio_devices
 from diarizeflow.app.config import AppConfig, resolve_app_path
+from diarizeflow.app.frontend.display_server import detect_display_server
 
 
 class SettingsDialog(QDialog):
@@ -113,6 +114,27 @@ class SettingsDialog(QDialog):
             }
         """)
         layout.addWidget(status_box)
+
+        # Wayland Display Server Guidance Card
+        server_info = detect_display_server()
+        if server_info.is_wayland:
+            wayland_box = QLabel(
+                "ℹ️ <b>顯示伺服器協議</b>: Linux Wayland<br>"
+                "<span style='color: #94a3b8; font-size: 11px;'>"
+                "因 Wayland 安全沙盒限制全域熱鍵 (Alt+Shift+H) 攔截，若需切換滑鼠穿透請使用 HUD 控制按鈕或桌面系統托盤選單。"
+                "</span>"
+            )
+            wayland_box.setStyleSheet("""
+                QLabel {
+                    background-color: rgba(56, 189, 248, 0.10);
+                    color: #38bdf8;
+                    border: 1px solid rgba(56, 189, 248, 0.30);
+                    border-radius: 8px;
+                    padding: 8px 12px;
+                    font-size: 12px;
+                }
+            """)
+            layout.addWidget(wayland_box)
 
         form = QFormLayout()
         form.setSpacing(12)

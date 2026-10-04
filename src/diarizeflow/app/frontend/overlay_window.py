@@ -43,6 +43,13 @@ from diarizeflow.app.audio.devices import list_audio_devices
 from diarizeflow.app.audio.protocol import pack_audio_frame
 from diarizeflow.app.config import AppConfig
 from diarizeflow.app.frontend.cards import SubtitleCardWidget
+from diarizeflow.app.frontend.display_server import (
+    detect_display_server,
+    get_clickthrough_balloon_message,
+    get_clickthrough_tooltip,
+    get_clickthrough_tray_title,
+    print_display_server_guidance,
+)
 from diarizeflow.app.frontend.network import (
     fetch_remote_backend_config,
     run_audio_client,
@@ -84,6 +91,9 @@ class TransparentSubtitleOverlay(QWidget):
             print("[*] 正在啟動 DiarizeFlow Pipeline 背景處理核心...")
             self.pipeline.start()
         self.is_running = True
+        self.display_info = detect_display_server()
+        if self.display_info.is_wayland:
+            print_display_server_guidance()
         self.audio_queue = queue.Queue(maxsize=100)
         self._current_speaker = "講者 1"
         self._current_translated_text = ""
@@ -280,7 +290,7 @@ class TransparentSubtitleOverlay(QWidget):
         # Click-through toggle button
         self.btn_clickthrough = QPushButton("🛡️ 穿透")
         self.btn_clickthrough.setCheckable(True)
-        self.btn_clickthrough.setToolTip("開啟/關閉滑鼠穿透（快捷鍵: Alt+Shift+H）")
+        self.btn_clickthrough.setToolTip(get_clickthrough_tooltip(False, self.display_info.is_wayland))
         self.btn_clickthrough.setStyleSheet("""
             QPushButton {
                 background-color: #1e293b;
@@ -485,9 +495,11 @@ class TransparentSubtitleOverlay(QWidget):
         """)
 
         # Action: Toggle Click-through
-        self.action_tray_clickthrough = QAction("🛡️ 切換滑鼠穿透 (Alt+Shift+H)", self)
+        self.action_tray_clickthrough = QAction(get_clickthrough_tray_title(self.display_info.is_wayland), self)
         self.action_tray_clickthrough.setCheckable(True)
         self.action_tray_clickthrough.setChecked(self.is_clickthrough)
+        if self.display_info.is_wayland:
+            self.action_tray_clickthrough.setToolTip("Wayland 環境下全域熱鍵受限，請使用此托盤項目切換穿透")
         self.action_tray_clickthrough.triggered.connect(lambda: self._toggle_clickthrough())
         self.tray_menu.addAction(self.action_tray_clickthrough)
 
@@ -545,6 +557,8 @@ class TransparentSubtitleOverlay(QWidget):
 
         if sys.platform == "win32":
             self._register_windows_global_hotkeys()
+        elif self.display_info.is_wayland:
+            print("[*] [HUD] Wayland 環境: 全域熱鍵 (Alt+Shift+H) 受限，請使用桌面系統托盤或視窗控制按鈕操作。")
 
     def _register_windows_global_hotkeys(self):
         try:
@@ -1041,12 +1055,13 @@ class TransparentSubtitleOverlay(QWidget):
                 self.btn_clickthrough.setChecked(self.is_clickthrough)
                 self.btn_clickthrough.blockSignals(False)
 
+            is_wayland = getattr(self, "display_info", None) and self.display_info.is_wayland
             if self.is_clickthrough:
                 self.btn_clickthrough.setText("🛡️ 穿透中")
-                self.btn_clickthrough.setToolTip("滑鼠穿透已開啟（按 Alt+Shift+H 或托盤關閉）")
+                self.btn_clickthrough.setToolTip(get_clickthrough_tooltip(True, is_wayland))
             else:
                 self.btn_clickthrough.setText("🛡️ 穿透")
-                self.btn_clickthrough.setToolTip("開啟/關閉滑鼠穿透（快捷鍵: Alt+Shift+H）")
+                self.btn_clickthrough.setToolTip(get_clickthrough_tooltip(False, is_wayland))
 
         # 2. Update Tray Menu Action state
         if hasattr(self, "action_tray_clickthrough") and self.action_tray_clickthrough:
@@ -1075,18 +1090,22 @@ class TransparentSubtitleOverlay(QWidget):
             self.header_widget.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, False)
 
         # 4. Notify user via system tray message balloon if enabled
+        is_wayland = getattr(self, "display_info", None) and self.display_info.is_wayland
         if self.is_clickthrough and hasattr(self, "tray_icon") and self.tray_icon and QSystemTrayIcon.isSystemTrayAvailable():
             try:
                 self.tray_icon.showMessage(
                     "DiarizeFlow 懸浮字幕",
-                    "🛡️ 已開啟滑鼠穿透模式！\n隨時按 Alt+Shift+H 或右鍵點擊右下角系統托盤即可解除穿透。",
+                    get_clickthrough_balloon_message(is_wayland),
                     QSystemTrayIcon.MessageIcon.Information,
                     3500,
                 )
             except Exception:
                 pass
 
-        print(f"[*] [HUD] 滑鼠穿透模式已{'開啟' if self.is_clickthrough else '關閉'} (快捷鍵: Alt+Shift+H / Ctrl+Shift+T)")
+        if is_wayland:
+            print(f"[*] [HUD] 滑鼠穿透模式已{'開啟' if self.is_clickthrough else '關閉'} (Wayland 提示: 請使用系統托盤解除穿透)")
+        else:
+            print(f"[*] [HUD] 滑鼠穿透模式已{'開啟' if self.is_clickthrough else '關閉'} (快捷鍵: Alt+Shift+H / Ctrl+Shift+T)")
 
     def nativeEvent(self, eventType, message):
         if sys.platform == "win32":
