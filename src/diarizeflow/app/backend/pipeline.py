@@ -94,6 +94,13 @@ class DiarizeFlowPipeline:
 
         self._speech_queue: queue.Queue = queue.Queue(maxsize=100)
         self._raw_chunk_queue: queue.Queue = queue.Queue(maxsize=200)
+        self.last_audio_source: str = "mixed"
+        self.audio_stats: Dict[str, int] = {
+            "mic_chunks": 0,
+            "loopback_chunks": 0,
+            "mixed_chunks": 0,
+            "total_chunks": 0,
+        }
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._worker_task: Optional[asyncio.Task] = None
         self._segmenter_thread: Optional[threading.Thread] = None
@@ -188,11 +195,21 @@ class DiarizeFlowPipeline:
                         print(f"[!] Error in subtitle callback: {e}")
             self.on_subtitle_broadcast = chained
 
-    def push_audio(self, chunk: np.ndarray, rms: Optional[float] = None):
+    def push_audio(
+        self,
+        chunk: np.ndarray,
+        rms: Optional[float] = None,
+        source: Optional[str] = None,
+    ):
         """Pass audio chunk into pipeline (alias for process_audio_chunk)."""
-        self.process_audio_chunk(chunk, rms)
+        self.process_audio_chunk(chunk, rms, source=source)
 
-    def process_audio_chunk(self, chunk: np.ndarray, rms: Optional[float] = None):
+    def process_audio_chunk(
+        self,
+        chunk: np.ndarray,
+        rms: Optional[float] = None,
+        source: Optional[str] = None,
+    ):
         """Ingest real-time 16kHz mono audio chunk asynchronously into non-blocking queue."""
         if not self.is_running:
             print("[*] Audio received while pipeline inactive. Auto-starting pipeline...")
@@ -201,14 +218,25 @@ class DiarizeFlowPipeline:
         if rms is None:
             rms = float(np.sqrt(np.mean(chunk ** 2) + 1e-9))
 
+        src = source or "mixed"
+        self.last_audio_source = src
+        self.audio_stats["total_chunks"] += 1
+        if src == "mic":
+            self.audio_stats["mic_chunks"] += 1
+        elif src in ("loopback", "system"):
+            self.audio_stats["loopback_chunks"] += 1
+        else:
+            self.audio_stats["mixed_chunks"] += 1
+
+        item = (chunk, rms, src)
         try:
-            self._raw_chunk_queue.put_nowait((chunk, rms))
+            self._raw_chunk_queue.put_nowait(item)
         except queue.Full:
             try:
                 self._raw_chunk_queue.get_nowait()
             except queue.Empty:
                 pass
-            self._raw_chunk_queue.put_nowait((chunk, rms))
+            self._raw_chunk_queue.put_nowait(item)
 
     def _segmenter_worker(self):
         """Dedicated background thread pulling raw audio chunks and executing streaming SAD."""
@@ -220,7 +248,12 @@ class DiarizeFlowPipeline:
             if not self.is_running or item is None:
                 break
 
-            chunk, rms = item
+            if len(item) == 3:
+                chunk, rms, source = item
+            else:
+                chunk, rms = item
+                source = "mixed"
+
             try:
                 # Real-time Streaming AGC: dynamically boost quiet audio & tame loud audio before SAD
                 proc_chunk = chunk
@@ -229,7 +262,7 @@ class DiarizeFlowPipeline:
                     proc_chunk, current_gain, proc_rms = self.stream_agc.process(chunk)
 
                 # Ingest into streaming diarization-driven segmenter (multi-track SAD)
-                self.segmenter.process_chunk(proc_chunk, proc_rms)
+                self.segmenter.process_chunk(proc_chunk, proc_rms, source=source)
             except Exception as e:
                 print(f"[!] Error in segmenter worker: {e}")
 

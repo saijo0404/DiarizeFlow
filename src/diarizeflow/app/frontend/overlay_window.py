@@ -40,6 +40,7 @@ from PySide6.QtWidgets import (
 
 from diarizeflow.app.audio.capture import AudioCaptureStream
 from diarizeflow.app.audio.devices import list_audio_devices
+from diarizeflow.app.audio.protocol import pack_audio_frame
 from diarizeflow.app.config import AppConfig
 from diarizeflow.app.frontend.cards import SubtitleCardWidget
 from diarizeflow.app.frontend.network import (
@@ -1015,14 +1016,16 @@ class TransparentSubtitleOverlay(QWidget):
         self.vu_indicator.setText("● 待機")
         self.vu_indicator.setStyleSheet("color: #64748b; font-size: 11px; font-weight: 600;")
 
-    def _on_audio_chunk(self, chunk, rms: float):
+    def _on_audio_chunk(self, chunk, rms: float, source: str = "mixed"):
         # Update real-time VU indicator
         self.audio_level_signal.emit(rms)
         # If direct in-process pipeline is available, pass audio directly for lowest latency
         if self.pipeline:
-            self.pipeline.push_audio(chunk, rms)
+            self.pipeline.push_audio(chunk, rms, source=source)
         else:
-            self.audio_chunk_signal.emit(chunk.tobytes())
+            sr = getattr(self.config.audio, "sample_rate", 16000)
+            framed = pack_audio_frame(chunk, track=source, sample_rate=sr)
+            self.audio_chunk_signal.emit(framed)
 
     def _toggle_clickthrough(self, checked: Optional[bool] = None):
         """Toggle mouse click-through mode with multi-layer safety protections."""

@@ -7,8 +7,10 @@ import time
 from typing import Callable, Optional
 import urllib.parse
 import urllib.request
+import numpy as np
 from websockets.sync.client import connect as ws_connect
 
+from diarizeflow.app.audio.protocol import pack_audio_frame
 from diarizeflow.app.config import AppConfig
 
 
@@ -160,7 +162,18 @@ def run_audio_client(
                 while is_running():
                     try:
                         data = audio_queue.get(timeout=0.5)
-                        ws.send(data)
+                        if isinstance(data, (tuple, list)):
+                            chunk = data[0]
+                            track = data[1] if len(data) > 1 else "mixed"
+                            sr = data[2] if len(data) > 2 else 16000
+                            payload = pack_audio_frame(chunk, track=track, sample_rate=sr)
+                        elif isinstance(data, np.ndarray):
+                            payload = pack_audio_frame(data, track="mixed", sample_rate=16000)
+                        elif isinstance(data, (bytes, bytearray)):
+                            payload = data
+                        else:
+                            continue
+                        ws.send(payload)
                     except queue.Empty:
                         continue
         except Exception:

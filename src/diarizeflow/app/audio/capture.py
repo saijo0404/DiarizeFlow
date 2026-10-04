@@ -414,7 +414,7 @@ class AudioCaptureStream:
                             else:
                                 l_chunk = np.zeros(self.chunk_samples, dtype=np.float32)
                             routed, source = self.router.route(m_chunk, l_chunk)
-                            self._dispatch_chunk(routed)
+                            self._dispatch_chunk(routed, source=source)
 
                 if len(buffer_loop) >= self.chunk_samples:
                     mic_stalled = (now - last_mic_time >= self.stall_timeout) or (
@@ -430,7 +430,7 @@ class AudioCaptureStream:
                             else:
                                 m_chunk = np.zeros(self.chunk_samples, dtype=np.float32)
                             routed, source = self.router.route(m_chunk, l_chunk)
-                            self._dispatch_chunk(routed)
+                            self._dispatch_chunk(routed, source=source)
 
                 # Bound max buffer size to prevent memory leaks and unrecoverable latency lag
                 if len(buffer_mic) > self.max_buffer_samples:
@@ -446,17 +446,17 @@ class AudioCaptureStream:
                 l_chunk = buffer_loop[: self.chunk_samples]
                 buffer_loop = buffer_loop[self.chunk_samples :]
                 routed, source = self.router.route(m_chunk, l_chunk)
-                self._dispatch_chunk(routed)
+                self._dispatch_chunk(routed, source=source)
         elif has_mic:
             while len(buffer_mic) >= self.chunk_samples:
                 chunk = buffer_mic[: self.chunk_samples]
                 buffer_mic = buffer_mic[self.chunk_samples :]
-                self._dispatch_chunk(chunk)
+                self._dispatch_chunk(chunk, source="mic")
         elif has_loop:
             while len(buffer_loop) >= self.chunk_samples:
                 chunk = buffer_loop[: self.chunk_samples]
                 buffer_loop = buffer_loop[self.chunk_samples :]
-                self._dispatch_chunk(chunk)
+                self._dispatch_chunk(chunk, source="loopback")
 
     @property
     def current_route_source(self) -> str:
@@ -467,11 +467,25 @@ class AudioCaptureStream:
         """Dynamically update router parameters."""
         self.router.update_config(**kwargs)
 
-    def _dispatch_chunk(self, chunk: np.ndarray):
-        rms = float(np.sqrt(np.mean(chunk ** 2) + 1e-9))
+    def _dispatch_chunk(
+        self,
+        chunk: np.ndarray,
+        rms: Optional[Union[float, str]] = None,
+        source: str = "mixed",
+    ):
+        if isinstance(rms, str):
+            source = rms
+            rms = None
+        if rms is None:
+            rms = float(np.sqrt(np.mean(chunk ** 2) + 1e-9))
         if self.on_audio_chunk:
             try:
-                self.on_audio_chunk(chunk, rms)
+                self.on_audio_chunk(chunk, rms, source=source)
+            except TypeError:
+                try:
+                    self.on_audio_chunk(chunk, rms)
+                except Exception as e:
+                    print(f"[!] Error in on_audio_chunk callback: {e}")
             except Exception as e:
                 print(f"[!] Error in on_audio_chunk callback: {e}")
 
