@@ -73,7 +73,7 @@ def create_app(config: AppConfig, pipeline: DiarizeFlowPipeline) -> FastAPI:
 
     app = FastAPI(
         title="DiarizeFlow Real-time Translation API",
-        version="0.1.0",
+        version="2.0.0",
         lifespan=lifespan,
     )
 
@@ -258,7 +258,7 @@ def create_app(config: AppConfig, pipeline: DiarizeFlowPipeline) -> FastAPI:
     async def root():
         return {
             "service": "DiarizeFlow API",
-            "version": "0.1.0",
+            "version": "2.0.0",
             "docs": "/docs",
             "status": "running",
         }

@@ -1,5 +1,9 @@
 # DiarizeFlow
 
+[![CI](https://github.com/saijo0404/DiarizeFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/saijo0404/DiarizeFlow/actions/workflows/ci.yml)
+[![Version](https://img.shields.io/badge/version-2.0.0-blue.svg)](https://github.com/saijo0404/DiarizeFlow/releases/tag/v2.0.0)
+[![Python](https://img.shields.io/badge/python-3.10%20%7C%203.11%20%7C%203.12-blue)](https://www.python.org/)
+
 `DiarizeFlow` 是一個專為即時語音辨識、多講者分離與即時翻譯設計的現代化桌面懸浮字幕（HUD）系統。核心技術整合 **NVIDIA Nemotron-3-Diarization (Sortformer)**、**Faster-Whisper Large-v2**、**SenseVoiceSmall**、**目標講者語音提取 (Target-Speaker Extraction / TSE)** 以及雙軌智慧音訊路由，並採用 `uv` 進行確定性套件與環境管理。
 
 ---
