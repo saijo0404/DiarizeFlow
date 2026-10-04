@@ -13,12 +13,12 @@ from typing import Callable, List, Optional
 import uuid
 import numpy as np
 
-from diarizeflow.app.config import AppConfig
-from diarizeflow.app.audio.segmenter import StreamingDiarizationSegmenter
-from diarizeflow.app.audio.agc import StreamingInputAGC
-from diarizeflow.app.backend.diarizer import NemotronDiarizer
-from diarizeflow.app.backend.asr import SenseVoiceASR, create_asr_engine
-from diarizeflow.app.backend.translator import LLMTranslator
+from diarizeflow.config import AppConfig
+from diarizeflow.audio.segmenter import StreamingDiarizationSegmenter
+from diarizeflow.audio.agc import StreamingInputAGC
+from diarizeflow.engine.diarizer import NemotronDiarizer
+from diarizeflow.engine.asr import SenseVoiceASR, create_asr_engine
+from diarizeflow.engine.translator import LLMTranslator
 
 
 @dataclass
@@ -67,7 +67,7 @@ class DiarizeFlowPipeline:
         self.tse = None
         if tse_cfg is not None and getattr(tse_cfg, "enabled", True):
             try:
-                from diarizeflow.app.audio.tse import TargetSpeakerExtractor
+                from diarizeflow.audio.tse import TargetSpeakerExtractor
                 self.tse = TargetSpeakerExtractor(
                     config=tse_cfg,
                     sample_rate=self.config.audio.sample_rate,

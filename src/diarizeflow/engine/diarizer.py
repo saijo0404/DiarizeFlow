@@ -18,8 +18,8 @@ import numpy as np
 import onnxruntime as ort
 import scipy.signal
 
-from diarizeflow.app.config import DiarizationConfig, resolve_app_path
-from diarizeflow.app.backend.voiceprint import SpeakerProfile, VoiceprintDatabase
+from diarizeflow.config import DiarizationConfig, resolve_app_path
+from diarizeflow.engine.voiceprint import SpeakerProfile, VoiceprintDatabase
 
 
 

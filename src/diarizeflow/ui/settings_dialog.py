@@ -23,9 +23,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from diarizeflow.app.audio.devices import list_audio_devices
-from diarizeflow.app.config import AppConfig, resolve_app_path
-from diarizeflow.app.frontend.display_server import detect_display_server
+from diarizeflow.audio.devices import list_audio_devices
+from diarizeflow.config import AppConfig, resolve_app_path
+from diarizeflow.ui.display_server import detect_display_server
 
 
 class SettingsDialog(QDialog):

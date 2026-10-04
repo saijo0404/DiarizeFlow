@@ -5,7 +5,7 @@ import time
 import unittest
 import numpy as np
 
-from diarizeflow.app.audio.capture import AudioCaptureStream
+from diarizeflow.audio.capture import AudioCaptureStream
 
 
 class DummyStream:

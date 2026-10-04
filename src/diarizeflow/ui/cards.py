@@ -19,8 +19,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from diarizeflow.app.config import AppConfig
-from diarizeflow.app.frontend.widgets import get_speaker_color
+from diarizeflow.config import AppConfig
+from diarizeflow.ui.widgets import get_speaker_color
 
 
 class SpeakerBadge(QLabel):

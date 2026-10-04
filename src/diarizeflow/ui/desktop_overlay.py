@@ -7,11 +7,11 @@ This module re-exports components decomposed into:
 - overlay_window: TransparentSubtitleOverlay, run_overlay_app, run_cli
 """
 
-from diarizeflow.app.frontend.cards import (
+from diarizeflow.ui.cards import (
     SpeakerBadge,
     SubtitleCardWidget,
 )
-from diarizeflow.app.frontend.network import (
+from diarizeflow.ui.network import (
     fetch_remote_backend_config,
     run_audio_client,
     run_subtitles_client,
@@ -19,13 +19,13 @@ from diarizeflow.app.frontend.network import (
     send_remote_rename_api,
     sync_config_to_remote_backend,
 )
-from diarizeflow.app.frontend.overlay_window import (
+from diarizeflow.ui.overlay_window import (
     TransparentSubtitleOverlay,
     run_cli,
     run_overlay_app,
 )
-from diarizeflow.app.frontend.settings_dialog import SettingsDialog
-from diarizeflow.app.frontend.widgets import (
+from diarizeflow.ui.settings_dialog import SettingsDialog
+from diarizeflow.ui.widgets import (
     SPEAKER_COLORS,
     create_app_icon,
     format_vu_level,

@@ -20,10 +20,10 @@ import time
 from typing import Optional, Tuple
 import uvicorn
 
-from diarizeflow.app.backend.pipeline import DiarizeFlowPipeline
-from diarizeflow.app.backend.server import create_app
-from diarizeflow.app.config import AppConfig
-from diarizeflow.models import check_missing_models
+from diarizeflow.engine.pipeline import DiarizeFlowPipeline
+from diarizeflow.engine.server import create_app
+from diarizeflow.config import AppConfig
+from diarizeflow.cli.downloader import check_missing_models
 
 
 class DualLogger(io.TextIOBase):
@@ -221,7 +221,7 @@ def run_cli() -> int:
 
     # 4. First-run hardware calibration & auto-quantization
     try:
-        from diarizeflow.calibration import ensure_calibrated_models
+        from diarizeflow.core.calibration import ensure_calibrated_models
         cfg = ensure_calibrated_models(cfg)
     except Exception as calib_err:
         print(f"[!] 硬體校準檢查注意: {calib_err}")
@@ -269,14 +269,14 @@ def run_cli() -> int:
 
     # 6. Check display server environment & emit Wayland guidance if running on Wayland
     try:
-        from diarizeflow.app.frontend.display_server import print_display_server_guidance
+        from diarizeflow.ui.display_server import print_display_server_guidance
         print_display_server_guidance()
     except Exception:
         pass
 
     # 7. Start Frontend HUD
     try:
-        from diarizeflow.app.frontend.desktop_overlay import run_overlay_app
+        from diarizeflow.ui.desktop_overlay import run_overlay_app
         print("[*] 正在啟動 PySide6 原生透明飄浮字幕視窗 (Windows & Linux 相容)...")
         code = run_overlay_app(cfg, pipeline=pipeline)
         return code if isinstance(code, int) else 0

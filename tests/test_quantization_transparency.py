@@ -14,7 +14,7 @@ from onnx import helper, TensorProto, numpy_helper
 import onnxruntime as ort
 import pytest
 
-from diarizeflow.quantize import (
+from diarizeflow.core.quantize import (
     QuantPrecision,
     is_simulated_quantization,
     is_native_quantization,

@@ -146,7 +146,7 @@ def get_config_path(filename: str = "config.json") -> Path:
         exe_dir = Path(sys.executable).parent
         return exe_dir / filename
     try:
-        project_root = Path(__file__).resolve().parent.parent.parent.parent
+        project_root = Path(__file__).resolve().parent.parent.parent
         return project_root / filename
     except Exception:
         return Path(filename).resolve()
@@ -190,7 +190,7 @@ def resolve_app_path(path_str: str | Path) -> Path:
 
     # 3. Check project root
     try:
-        project_root = Path(__file__).resolve().parent.parent.parent.parent
+        project_root = Path(__file__).resolve().parent.parent.parent
         cand = project_root / p
         if cand.exists():
             return cand

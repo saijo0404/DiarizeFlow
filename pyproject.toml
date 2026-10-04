@@ -52,12 +52,12 @@ build = [
 ]
 
 [project.scripts]
-diarizeflow-export = "diarizeflow.export_onnx:main"
-diarizeflow-quantize = "diarizeflow.quantize:main"
-diarizeflow-server = "diarizeflow.app.backend.server:run_cli"
-diarizeflow-overlay = "diarizeflow.app.frontend.desktop_overlay:run_cli"
-diarizeflow-app = "diarizeflow.app.launcher:run_cli"
-diarizeflow-download = "diarizeflow.models:main"
+diarizeflow-export = "diarizeflow.core.export_onnx:main"
+diarizeflow-quantize = "diarizeflow.core.quantize:main"
+diarizeflow-server = "diarizeflow.engine.server:run_cli"
+diarizeflow-overlay = "diarizeflow.ui.desktop_overlay:run_cli"
+diarizeflow-app = "diarizeflow.cli.launcher:run_cli"
+diarizeflow-download = "diarizeflow.cli.downloader:main"
 
 [tool.uv.sources]
 nemo-toolkit = { git = "https://github.com/NVIDIA-NeMo/Speech.git" }

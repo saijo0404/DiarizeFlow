@@ -20,24 +20,24 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon, QMouseEvent
 from PySide6.QtWidgets import QApplication
 
-from diarizeflow.app.config import AppConfig
+from diarizeflow.config import AppConfig
 
 # 1. Direct submodule imports
-import diarizeflow.app.frontend as frontend_pkg
-from diarizeflow.app.frontend.cards import SpeakerBadge, SubtitleCardWidget
-from diarizeflow.app.frontend.network import (
+import diarizeflow.ui as frontend_pkg
+from diarizeflow.ui.cards import SpeakerBadge, SubtitleCardWidget
+from diarizeflow.ui.network import (
     fetch_remote_backend_config,
     send_remote_delete_api,
     send_remote_rename_api,
     sync_config_to_remote_backend,
 )
-from diarizeflow.app.frontend.overlay_window import (
+from diarizeflow.ui.overlay_window import (
     TransparentSubtitleOverlay,
     run_cli,
     run_overlay_app,
 )
-from diarizeflow.app.frontend.settings_dialog import SettingsDialog
-from diarizeflow.app.frontend.widgets import (
+from diarizeflow.ui.settings_dialog import SettingsDialog
+from diarizeflow.ui.widgets import (
     SPEAKER_COLORS,
     create_app_icon,
     format_vu_level,
@@ -45,7 +45,7 @@ from diarizeflow.app.frontend.widgets import (
 )
 
 # 2. Backward-compatible desktop_overlay imports
-import diarizeflow.app.frontend.desktop_overlay as legacy_overlay
+import diarizeflow.ui.desktop_overlay as legacy_overlay
 
 
 class TestFrontendModularizationExports(unittest.TestCase):

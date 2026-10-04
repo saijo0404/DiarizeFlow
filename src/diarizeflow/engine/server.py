@@ -21,10 +21,10 @@ import soundfile as sf
 import librosa
 import io
 
-from diarizeflow.app.config import AppConfig
-from diarizeflow.app.backend.pipeline import DiarizeFlowPipeline, SubtitleEvent
-from diarizeflow.app.audio.devices import list_audio_devices
-from diarizeflow.app.audio.protocol import unpack_audio_frame
+from diarizeflow.config import AppConfig
+from diarizeflow.engine.pipeline import DiarizeFlowPipeline, SubtitleEvent
+from diarizeflow.audio.devices import list_audio_devices
+from diarizeflow.audio.protocol import unpack_audio_frame
 
 
 def create_app(config: AppConfig, pipeline: DiarizeFlowPipeline) -> FastAPI:

@@ -21,9 +21,9 @@ from fastapi.testclient import TestClient
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtWidgets import QApplication
 
-from diarizeflow.app.config import AppConfig
-from diarizeflow.app.backend.server import create_app
-from diarizeflow.app.frontend.desktop_overlay import TransparentSubtitleOverlay
+from diarizeflow.config import AppConfig
+from diarizeflow.engine.server import create_app
+from diarizeflow.ui.desktop_overlay import TransparentSubtitleOverlay
 
 
 def get_or_create_qapp():
@@ -93,7 +93,7 @@ class TestBackendConfigAPI(unittest.TestCase):
 
     def test_post_config_handles_malformed_payload(self):
         """Verify POST /api/config handles malformed payloads gracefully with 400 Bad Request."""
-        with patch("diarizeflow.app.config.AppConfig.from_dict", side_effect=ValueError("Corrupted data")):
+        with patch("diarizeflow.config.AppConfig.from_dict", side_effect=ValueError("Corrupted data")):
             resp = self.client.post("/api/config", json={"audio": "not-a-dict"})
             self.assertEqual(resp.status_code, 400)
             self.assertIn("Invalid configuration payload", resp.json()["detail"])

@@ -4,17 +4,17 @@ from pathlib import Path
 import unittest
 from unittest.mock import MagicMock
 
-from diarizeflow.app.config import AppConfig
-from diarizeflow.app.backend.server import create_app
+from diarizeflow.config import AppConfig
+from diarizeflow.engine.server import create_app
 
 
 class TestWebFrontendRemoval(unittest.TestCase):
     """Ensure all traces of the legacy web frontend are cleanly removed."""
 
     def test_web_static_directory_removed(self):
-        """Verify that src/diarizeflow/app/frontend/web no longer exists."""
+        """Verify that src/diarizeflow/ui/web no longer exists."""
         project_root = Path(__file__).resolve().parent.parent
-        web_dir = project_root / "src" / "diarizeflow" / "app" / "frontend" / "web"
+        web_dir = project_root / "src" / "diarizeflow" / "ui" / "web"
         self.assertFalse(
             web_dir.exists(),
             f"Web frontend directory {web_dir} still exists and should be deleted!",
@@ -74,7 +74,7 @@ class TestWebFrontendRemoval(unittest.TestCase):
         """Verify launcher and run scripts do not have web fallback or web mode."""
         project_root = Path(__file__).resolve().parent.parent
         for rel_path in [
-            "src/diarizeflow/app/launcher.py",
+            "src/diarizeflow/cli/launcher.py",
             "scripts/run_app.py",
             "scripts/run_frontend.py",
         ]:

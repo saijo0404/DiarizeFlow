@@ -14,7 +14,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
-from diarizeflow.app.config import (
+from diarizeflow.config import (
     AppConfig,
     AudioConfig,
     DiarizationConfig,

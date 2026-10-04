@@ -23,8 +23,8 @@ try:
 except ImportError:
     requests = None
 
-from diarizeflow.app.config import AppConfig, resolve_app_path
-from diarizeflow.hardware import QuantPrecision, get_system_device_info
+from diarizeflow.config import AppConfig, resolve_app_path
+from diarizeflow.core.hardware import QuantPrecision, get_system_device_info
 
 
 @dataclass

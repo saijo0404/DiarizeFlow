@@ -16,8 +16,8 @@ import sys
 import time
 from typing import Optional
 
-from diarizeflow.app.config import AppConfig, resolve_app_path
-from diarizeflow.hardware import QuantPrecision, get_system_device_info
+from diarizeflow.config import AppConfig, resolve_app_path
+from diarizeflow.core.hardware import QuantPrecision, get_system_device_info
 
 
 def ensure_calibrated_models(config: AppConfig, force: bool = False) -> AppConfig:
@@ -51,7 +51,7 @@ def ensure_calibrated_models(config: AppConfig, force: bool = False) -> AppConfi
 
     # 2. Nemotron-3 Diarization Model Optimization
     try:
-        from diarizeflow.quantize import quantize_fp16, quantize_int8
+        from diarizeflow.core.quantize import quantize_fp16, quantize_int8
 
         nemo_base = resolve_app_path("models/nemotron_diarization/Nemotron-3-Diarization.onnx")
         nemo_fp16 = resolve_app_path("models/nemotron_diarization/Nemotron-3-Diarization_fp16.onnx")

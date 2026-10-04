@@ -17,7 +17,7 @@ src_dir = project_root / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
-from diarizeflow.models import main
+from diarizeflow.cli.downloader import main
 
 if __name__ == "__main__":
     main()

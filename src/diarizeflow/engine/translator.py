@@ -12,7 +12,7 @@ from typing import Dict, Optional
 import aiohttp
 import requests
 
-from diarizeflow.app.config import LLMConfig
+from diarizeflow.config import LLMConfig
 
 
 class LLMTranslator:

@@ -5,6 +5,20 @@
 
 ---
 
+## [Unreleased]
+
+### ♻️ 重構 (Refactor)
+
+- **專案套件架構分層重整** ([#64](https://github.com/saijo0404/DiarizeFlow/issues/64))
+  - 移除冗餘的 `app/` 層級，將 `src/diarizeflow/` 重整為 `config` / `core` / `audio` / `engine` / `ui` / `cli` 分層：
+    - `app/backend/*` → `engine/`、`app/frontend/*` → `ui/`、`app/audio/*` → `audio/`、`app/config.py` → `config.py`
+    - `export_onnx` / `quantize` / `patches` / `hardware` / `calibration` → `core/`
+    - `app/launcher.py` → `cli/launcher.py`、`models.py` → `cli/downloader.py`
+  - 消除 `calibration` ↔ `launcher` 跨層雙向依賴，依賴方向嚴格為 `cli → ui/engine → audio → config`、`cli → core → config`。
+  - 同步更新 `pyproject.toml` entrypoints、scripts、測試與 README；新增 `tests/test_package_layering.py` 以 AST 自動驗證分層與無循環依賴。
+
+---
+
 ## [2.0.0] - 2026-10-04
 
 ### 🚀 里程碑概述 (Milestone Overview)

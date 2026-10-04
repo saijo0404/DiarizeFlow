@@ -7,9 +7,9 @@ import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 
-from diarizeflow.app.config import AppConfig, LLMConfig
-from diarizeflow.app.backend.translator import LLMTranslator
-from diarizeflow.app.backend.pipeline import DiarizeFlowPipeline, SubtitleEvent
+from diarizeflow.config import AppConfig, LLMConfig
+from diarizeflow.engine.translator import LLMTranslator
+from diarizeflow.engine.pipeline import DiarizeFlowPipeline, SubtitleEvent
 
 
 class TestLLMTranslatorConcurrency(unittest.IsolatedAsyncioTestCase):

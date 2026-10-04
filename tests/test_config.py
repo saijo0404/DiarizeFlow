@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from diarizeflow.app.config import AppConfig
+from diarizeflow.config import AppConfig
 
 
 class TestAppConfigSerialization(unittest.TestCase):

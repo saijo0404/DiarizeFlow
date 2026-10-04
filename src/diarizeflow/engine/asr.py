@@ -11,7 +11,7 @@ import numpy as np
 import onnxruntime as ort
 import sentencepiece as spm
 
-from diarizeflow.app.config import ASRConfig, resolve_app_path
+from diarizeflow.config import ASRConfig, resolve_app_path
 
 
 class SenseVoiceASR:

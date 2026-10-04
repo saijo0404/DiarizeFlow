@@ -12,7 +12,7 @@ import onnx
 import torch
 import torch.nn as nn
 
-from diarizeflow.patches import apply_onnx_export_patches
+from diarizeflow.core.patches import apply_onnx_export_patches
 
 
 class StreamingSortformerOnnxWrapper(nn.Module):
@@ -241,7 +241,7 @@ def export_nemo_to_onnx(
         print("\n" + "=" * 60)
         print(f"[*] 啟動量化流程 (Precision: {quantize})...")
         print("=" * 60)
-        from diarizeflow.quantize import auto_quantize_and_verify
+        from diarizeflow.core.quantize import auto_quantize_and_verify
         auto_quantize_and_verify(
             input_model=str(target_model_path),
             precision=quantize,

@@ -10,8 +10,8 @@ import urllib.request
 import numpy as np
 from websockets.sync.client import connect as ws_connect
 
-from diarizeflow.app.audio.protocol import pack_audio_frame
-from diarizeflow.app.config import AppConfig
+from diarizeflow.audio.protocol import pack_audio_frame
+from diarizeflow.config import AppConfig
 
 
 def sync_config_to_remote_backend(

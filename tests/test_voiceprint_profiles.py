@@ -18,17 +18,17 @@ import unittest
 from unittest.mock import MagicMock
 import numpy as np
 
-from diarizeflow.app.config import AppConfig, DiarizationConfig
-from diarizeflow.app.backend.voiceprint import SpeakerProfile, VoiceprintDatabase
-from diarizeflow.app.backend.diarizer import NemotronDiarizer
-from diarizeflow.app.backend.pipeline import DiarizeFlowPipeline
-from diarizeflow.app.backend.server import create_app
+from diarizeflow.config import AppConfig, DiarizationConfig
+from diarizeflow.engine.voiceprint import SpeakerProfile, VoiceprintDatabase
+from diarizeflow.engine.diarizer import NemotronDiarizer
+from diarizeflow.engine.pipeline import DiarizeFlowPipeline
+from diarizeflow.engine.server import create_app
 from fastapi.testclient import TestClient
 from PySide6.QtCore import Qt, QPoint
 from PySide6.QtGui import QMouseEvent
 from PySide6.QtWidgets import QApplication
 
-from diarizeflow.app.frontend.desktop_overlay import (
+from diarizeflow.ui.desktop_overlay import (
     SpeakerBadge,
     SubtitleCardWidget,
     TransparentSubtitleOverlay,

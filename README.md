@@ -61,41 +61,51 @@ DiarizeFlow/
 │   └── benchmark_whisper.py           # Faster-Whisper 推論基準評測腳本
 ├── src/
 │   └── diarizeflow/
-│       ├── __init__.py                # 套件導出
-│       ├── export_onnx.py             # 核心 ONNX 匯出、簡化與驗證邏輯
-│       ├── quantize.py                # 多精度量化引擎 (FP16/INT8/FP8/NVFP4/MXFP4/W4A16)
-│       ├── hardware.py                # 跨平台硬體偵測引擎 (CUDA Driver API / SM 架構感知)
-│       ├── calibration.py             # 首次啟動硬體探測與自適應量化校準
-│       ├── patches.py                 # PyTorch Dynamo / ONNX 運算子相容性修補
-│       ├── models.py                  # 語音模型註冊表、狀態檢查與下載管理
-│       └── app/                       # DiarizeFlow 桌面應用程式核心
-│           ├── config.py              # 資料類別設定規格 (AppConfig, AudioConfig, UIConfig 等)
+│       ├── __init__.py                # 套件導出 (AppConfig 與核心運算 API)
+│       ├── config.py                  # 全域統一配置中心 (AppConfig, AudioConfig, UIConfig 等；依賴朝向此模組)
+│       ├── core/                      # 底層運算核心：硬體感知、ONNX 匯出、量化與校準
+│       │   ├── export_onnx.py         # 核心 ONNX 匯出、簡化與驗證邏輯
+│       │   ├── quantize.py            # 多精度量化引擎 (FP16/INT8/FP8/NVFP4/MXFP4/W4A16)
+│       │   ├── hardware.py            # 跨平台硬體偵測引擎 (CUDA Driver API / SM 架構感知)
+│       │   ├── calibration.py         # 首次啟動硬體探測與自適應量化校準
+│       │   └── patches.py             # PyTorch Dynamo / ONNX 運算子相容性修補
+│       ├── audio/                     # 音訊工程領域：音訊擷取、DSP 處理與多軌路由
+│       │   ├── capture.py             # 跨平台串流音訊擷取 (WASAPI / Pulse / PipeWire) 與 SmartAudioRouter
+│       │   ├── protocol.py            # 8-Byte 二進位 WebSocket 音訊標頭訊框協定與解析
+│       │   ├── segmenter.py           # StreamingDiarizationSegmenter 串流語者分割與能量回退
+│       │   ├── tse.py                 # TargetSpeakerExtractor 目標講者重疊語音提取
+│       │   ├── vad.py                 # 能量式語音活動檢測 (EnergyVADSegmenter)
+│       │   ├── agc.py                 # 串流輸入動態音量自動調節 (StreamingInputAGC)
+│       │   └── devices.py             # 音訊輸入裝置與系統回放裝置探測
+│       ├── engine/                    # AI 業務服務：推論管線與 FastAPI 服務
+│       │   ├── server.py              # FastAPI 應用、WebSocket (/ws/audio, /ws/subtitles) 與 REST API
+│       │   ├── pipeline.py            # DiarizeFlowPipeline 核心流程調度器
+│       │   ├── diarizer.py            # Nemotron-3 Diarization 串流推論與 Mel 濾波矩陣/窗函數快取
+│       │   ├── voiceprint.py          # 持久化聲紋資料庫 (SpeakerProfile, VoiceprintDatabase)
+│       │   ├── asr.py                 # SenseVoiceSmall 與 Faster-Whisper ASR 引擎工廠
+│       │   └── translator.py          # LLM 翻譯器 (持久化 aiohttp.ClientSession 連線池)
+│       ├── ui/                        # 桌面圖形介面：PySide6 原生懸浮字幕元件 (模組化架構)
+│       │   ├── overlay_window.py      # TransparentSubtitleOverlay 懸浮視窗本體與滑鼠穿透
+│       │   ├── cards.py               # SubtitleCardWidget 與 SpeakerBadge (多卡片對話隊列)
+│       │   ├── settings_dialog.py     # SettingsDialog 視覺化設定對話框與 Wayland 提示
+│       │   ├── display_server.py      # Linux Wayland / X11 / Windows / macOS 顯示伺服器協議偵測
+│       │   ├── network.py             # 後台 WebSocket 接收/音訊發送執行緒與 REST API 同步
+│       │   ├── widgets.py             # UI 輔助元件、圖示繪製、動態 VU 聲波計與霓虹色盤
+│       │   └── desktop_overlay.py     # UI 公開介面 Facade (無縫向後相容)
+│       └── cli/                       # 命令列與啟動器入口
 │           ├── launcher.py            # 整合式啟動器 (雙重日誌、例外捕獲、動態連接埠衝突檢測)
-│           ├── audio/                 # 音訊擷取、DSP 處理與多軌路由
-│           │   ├── capture.py         # 跨平台串流音訊擷取 (WASAPI / Pulse / PipeWire) 與 SmartAudioRouter
-│           │   ├── protocol.py        # 8-Byte 二進位 WebSocket 音訊標頭訊框協定與解析
-│           │   ├── segmenter.py       # StreamingDiarizationSegmenter 串流語者分割與能量回退
-│           │   ├── tse.py             # TargetSpeakerExtractor 目標講者重疊語音提取
-│           │   ├── vad.py             # 能量式語音活動檢測 (EnergyVADSegmenter)
-│           │   ├── agc.py             # 串流輸入動態音量自動調節 (StreamingInputAGC)
-│           │   └── devices.py         # 音訊輸入裝置與系統回放裝置探測
-│           ├── backend/               # 後端推論核心與 Web API 服務
-│           │   ├── server.py          # FastAPI 應用、WebSocket (/ws/audio, /ws/subtitles) 與 REST API
-│           │   ├── pipeline.py        # DiarizeFlowPipeline 核心流程調度器
-│           │   ├── diarizer.py        # Nemotron-3 Diarization 串流推論與 Mel 濾波矩陣/窗函數快取
-│           │   ├── voiceprint.py      # 持久化聲紋資料庫 (SpeakerProfile, VoiceprintDatabase)
-│           │   ├── asr.py             # SenseVoiceSmall 與 Faster-Whisper ASR 引擎工廠
-│           │   └── translator.py      # LLM 翻譯器 (持久化 aiohttp.ClientSession 連線池)
-│           └── frontend/              # PySide6 原生桌面懸浮字幕元件 (模組化架構)
-│               ├── overlay_window.py  # TransparentSubtitleOverlay 懸浮視窗本體與滑鼠穿透
-│               ├── cards.py           # SubtitleCardWidget 與 SpeakerBadge (多卡片對話隊列)
-│               ├── settings_dialog.py # SettingsDialog 視覺化設定對話框與 Wayland 提示
-│               ├── display_server.py  # Linux Wayland / X11 / Windows / macOS 顯示伺服器協議偵測
-│               ├── network.py         # 後台 WebSocket 接收/音訊發送執行緒與 REST API 同步
-│               ├── widgets.py         # UI 輔助元件、圖示繪製、動態 VU 聲波計與霓虹色盤
-│               └── desktop_overlay.py # 前端公開介面 Facade (無縫向後相容)
+│           └── downloader.py          # 語音模型註冊表、狀態檢查與下載管理 CLI
 └── tests/                             # 完整單元與整合測試套件 (250+ 測試全數通過)
 ```
+
+**套件分層與依賴方向（嚴格單向，無循環依賴；由 `tests/test_package_layering.py` 自動驗證）：**
+
+```
+cli ──► ui / engine ──► audio ──► config
+ └────► core ──────────────────► config
+```
+
+匯入範例：`from diarizeflow.engine import DiarizeFlowPipeline`、`from diarizeflow.config import AppConfig`。
 
 ---
 
@@ -254,7 +264,7 @@ DiarizeFlow 專為多聲道即時通訊環境研發專屬 DSP 音訊處理鏈：
 - **串音抑制 (Bleed Suppression)**：藉由即時比對系統回放訊號與麥克風訊號強度，若麥克風能量顯著低於系統音訊（預設比例 `0.40`），自動判定為耳機/喇叭漏音並予以降噪抑制，杜絕迴音干擾。
 - **防爆音平滑交叉淡化 (Anti-pop Cross-Fading)**：在音軌切換時執行餘弦加權平滑淡入淡出，消除切換瞬態爆音。
 
-### 2. Mel Spectrogram 濾波矩陣與窗函數快取 (`backend/diarizer.py`)
+### 2. Mel Spectrogram 濾波矩陣與窗函數快取 (`engine/diarizer.py`)
 - 在高頻率的串流處理迴圈中，預先計算並快取 128-bin Mel 濾波矩陣與 Hamming 窗函數，消除重複構建開銷，使特徵提取耗時由 4.3ms 大幅降低至 0.12ms (36x 加速)。
 
 ### 3. 目標講者重疊提取 (`tse.py`)

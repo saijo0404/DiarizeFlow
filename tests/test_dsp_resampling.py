@@ -3,9 +3,9 @@
 import unittest
 import numpy as np
 
-from diarizeflow.app.audio.capture import AudioCaptureStream
-from diarizeflow.app.config import AppConfig
-from diarizeflow.app.backend.pipeline import DiarizeFlowPipeline
+from diarizeflow.audio.capture import AudioCaptureStream
+from diarizeflow.config import AppConfig
+from diarizeflow.engine.pipeline import DiarizeFlowPipeline
 
 
 class TestDSPAudioResampling(unittest.TestCase):
@@ -78,7 +78,7 @@ class TestPipelineAGCCoherence(unittest.TestCase):
     def test_pipeline_worker_avoids_double_agc(self):
         """Verify that speech segment is not passed through a second AGC stage in pipeline worker."""
         import inspect
-        from diarizeflow.app.backend.pipeline import DiarizeFlowPipeline
+        from diarizeflow.engine.pipeline import DiarizeFlowPipeline
 
         source = inspect.getsource(DiarizeFlowPipeline._pipeline_worker)
         # Verify apply_speech_agc is not called inside _pipeline_worker
