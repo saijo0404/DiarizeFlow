@@ -23,6 +23,7 @@ import uvicorn
 from diarizeflow.app.backend.pipeline import DiarizeFlowPipeline
 from diarizeflow.app.backend.server import create_app
 from diarizeflow.app.config import AppConfig
+from diarizeflow.models import check_missing_models
 
 
 class DualLogger(io.TextIOBase):
@@ -206,7 +207,19 @@ def run_cli() -> int:
     # 2. Load Configuration
     cfg = AppConfig.load(args.config)
 
-    # 3. First-run hardware calibration & auto-quantization
+    # 3. Check for missing pre-trained speech models & provide friendly guidance
+    try:
+        missing = check_missing_models(cfg)
+        if missing:
+            print("\n" + "=" * 75)
+            print("⚠️  [!] 偵測到尚未下載預訓練語音模型。請執行以下指令一鍵下載：")
+            print("       uv run python scripts/download_models.py")
+            print(f"   缺失項目: {', '.join(missing)}")
+            print("=" * 75 + "\n")
+    except Exception as check_err:
+        pass
+
+    # 4. First-run hardware calibration & auto-quantization
     try:
         from diarizeflow.calibration import ensure_calibrated_models
         cfg = ensure_calibrated_models(cfg)
