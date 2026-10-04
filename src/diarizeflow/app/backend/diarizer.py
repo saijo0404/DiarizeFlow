@@ -16,6 +16,7 @@ import uuid
 import librosa
 import numpy as np
 import onnxruntime as ort
+import scipy.signal
 
 from diarizeflow.app.config import DiarizationConfig, resolve_app_path
 from diarizeflow.app.backend.voiceprint import SpeakerProfile, VoiceprintDatabase
@@ -91,7 +92,10 @@ class NemotronDiarizer:
         self.is_fp16: bool = False
         self._input_frame_dim = 2112  # Standard chunk frame buffer for Sortformer
         self._target_mel_bins = 128
+        self._mel_cache: Dict[int, Tuple[np.ndarray, np.ndarray]] = {}
         self._mel_basis: Optional[np.ndarray] = None
+        self._mel_window: Optional[np.ndarray] = None
+        self._init_mel_cache(sample_rate=16000)
         self.known_speakers: List[Dict[str, Any]] = []
         self.temporary_speakers: List[SpeakerProfile] = []
         profiles_path = getattr(self.config, "profiles_path", "data/speakers/profiles.json")
@@ -245,22 +249,54 @@ class NemotronDiarizer:
             f"(FP16={self.is_fp16}, Mode={self.active_profile['name']})"
         )
 
+    def _init_mel_cache(self, sample_rate: int = 16000) -> Tuple[np.ndarray, np.ndarray]:
+        """Pre-compute and cache mel filterbank matrix and window function for the given sample rate."""
+        n_fft = 512
+        win_length = int(sample_rate * 0.025)
+        mel_basis = librosa.filters.mel(
+            sr=sample_rate,
+            n_fft=n_fft,
+            n_mels=self._target_mel_bins,
+        )
+        mel_window = scipy.signal.windows.hamming(win_length, sym=False)
+        self._mel_cache[sample_rate] = (mel_basis, mel_window)
+        if sample_rate == 16000 or self._mel_basis is None:
+            self._mel_basis = mel_basis
+            self._mel_window = mel_window
+        return mel_basis, mel_window
+
+    def _get_mel_filters(self, sample_rate: int = 16000) -> Tuple[np.ndarray, np.ndarray]:
+        """Retrieve cached mel filterbank matrix and window function, initializing lazily if needed."""
+        if sample_rate == 16000 and self._mel_basis is not None and self._mel_window is not None:
+            return self._mel_basis, self._mel_window
+        cached = self._mel_cache.get(sample_rate)
+        if cached is not None:
+            return cached
+        return self._init_mel_cache(sample_rate)
+
     def _extract_mel(self, audio: np.ndarray, sample_rate: int = 16000) -> np.ndarray:
-        """Compute 128-channel log-mel spectrogram (25ms window, 10ms hop)."""
+        """Compute 128-channel log-mel spectrogram (25ms window, 10ms hop).
+
+        Reuses pre-computed mel filterbank matrix and hamming window to eliminate redundant
+        DSP allocations and CPU matrix generation overhead in streaming inference loops.
+        """
         n_fft = 512
         win_length = int(sample_rate * 0.025)
         hop_length = int(sample_rate * 0.010)
 
-        mel_spec = librosa.feature.melspectrogram(
+        mel_basis, mel_window = self._get_mel_filters(sample_rate)
+
+        stft_matrix = librosa.stft(
             y=audio,
-            sr=sample_rate,
             n_fft=n_fft,
             hop_length=hop_length,
             win_length=win_length,
-            n_mels=self._target_mel_bins,
-            window="hamming",
-            power=2.0,
+            window=mel_window,
+            center=True,
+            pad_mode="constant",
         )
+        power_spec = np.abs(stft_matrix) ** 2
+        mel_spec = mel_basis.dot(power_spec)
         log_mel = np.log(np.maximum(mel_spec, 1e-5)).T
         return log_mel.astype(np.float32)
 
